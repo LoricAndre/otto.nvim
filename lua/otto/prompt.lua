@@ -10,11 +10,11 @@ local ns = vim.api.nvim_create_namespace('otto.prompt')
 --- @field since? integer When the agent started, in milliseconds of the event loop
 --- @field timer? uv.uv_timer_t Counting the time while the agent works
 --- @field running { id: string, header: otto.Chunks, spaced: boolean, started: integer }[] Tools that haven't
---- finished
+--- finished, which show where they'll render once they do
 --- @field queue [string, string][] Messages that pi hasn't read yet, and their kind
 
 local areas = {} --- @type table<integer, otto.PromptArea> by buffer
-local slow = 3000 -- milliseconds before a running tool shows, since most finish sooner
+local slow = 3000 -- milliseconds before running tools show for how long they've run, since most finish sooner
 
 --- @param bufnr integer
 function M.clear(bufnr) areas[bufnr] = { running = {}, queue = {} } end
@@ -36,9 +36,14 @@ function M.draw(bufnr)
   -- the agent only queues messages after the first, so there's always a transcript and a separator
   if row == 0 then return end
 
-  local running = vim.tbl_filter(function(tool) return vim.uv.now() - tool.started >= slow end, area.running)
-  local lines = vim.tbl_map(function(tool) return { { '  ' }, unpack(tool.header) } end, running) -- nested in a group
-  if #running > 0 and running[1].spaced then table.insert(lines, 1, {}) end -- like the tools will be once they finish
+  local lines = vim.tbl_map(function(tool)
+    local line = { { '  ' }, unpack(tool.header) } -- nested in a group
+    local elapsed = vim.uv.now() - tool.started
+    if elapsed >= slow then table.insert(line, { '  ' .. M.duration(math.floor(elapsed / 1000)), 'OttoStatusTime' }) end
+    return line
+  end, area.running)
+  -- like the tools will be once they finish
+  if #area.running > 0 and area.running[1].spaced then table.insert(lines, 1, {}) end
   if area.status ~= nil then
     local elapsed = M.duration(math.floor((vim.uv.now() - area.since) / 1000))
     -- the empty line before the separator spaces it below
@@ -99,9 +104,7 @@ end
 --- @param spaced boolean Whether an empty line comes before the tool
 function M.tool_started(bufnr, id, header, spaced)
   table.insert(areas[bufnr].running, { id = id, header = header, spaced = spaced, started = vim.uv.now() })
-  vim.defer_fn(function()
-    if vim.api.nvim_buf_is_valid(bufnr) then M.draw(bufnr) end
-  end, slow)
+  M.draw(bufnr)
 end
 
 --- @param bufnr integer
