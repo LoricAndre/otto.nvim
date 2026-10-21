@@ -130,6 +130,9 @@ end
 
 --- @class otto.PiHandle : otto.Handle
 --- @field id string
+--- @field config otto.ProviderConfig
+--- @field closed? boolean
+--- @field on_event? fun(event: table)
 --- @field proc otto.Proc
 --- @field log otto.Log
 --- @field state otto.PiState
@@ -229,6 +232,7 @@ function Handle:on_message(msg)
   elseif msg.type == 'thinking_level_changed' then
     self.log:info({ effort = msg.level })
   end
+  if self.on_event then self.on_event(msg) end
 end
 
 --- The history from the session file, along its current branch
@@ -405,6 +409,7 @@ function M.open(id, opts)
   local args = { '--session-id', id }
   if opts.name ~= nil then vim.list_extend(args, { '--name', opts.name }) end
   local handle = start(id, args, opts.config, opts.on_log, opts.on_status)
+  handle.on_event = opts.on_event
   util.run(function()
     local state = handle:call({ type = 'get_state' })
     local model = state.model or {}

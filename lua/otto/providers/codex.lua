@@ -179,6 +179,7 @@ end
 --- @field proc otto.Proc
 --- @field log otto.Log
 --- @field on_status fun(status: otto.Status)
+--- @field on_event fun(event: table)
 --- @field thread? string id, once Codex started or resumed it
 --- @field waiting fun()[] Requests that wait for the thread
 --- @field error? string When the thread failed to start
@@ -227,12 +228,15 @@ end
 function Handle:queue_update()
   local texts = vim.tbl_map(function(unread) return unread.text end, self.unread)
   self.on_status({ type = 'queue', steering = texts, follow_up = self.follow_ups })
+  self.on_event({ type = 'queue_update', steering = texts, followUp = self.follow_ups })
 end
 
 --- @param working boolean
 function Handle:set_working(working)
+  local started = working and not self.working
   self.working = working
   self.on_status({ type = 'working', state = working and 'working' or nil })
+  if started then self.on_event({ type = 'agent_start' }) end
 end
 
 --- @param text string
@@ -310,6 +314,19 @@ function Handle:subagents(item)
   self:background_update()
 end
 
+function Handle:call_events(list, started)
+  if #list == 0 then return end
+  local parts = vim.tbl_map(
+    function(call) return { type = 'toolCall', id = call.id, name = call.tool, arguments = call.args } end,
+    list
+  )
+  self.on_event({ type = 'message_end', message = { role = 'assistant', content = parts } })
+  if not started then return end
+  for _, call in ipairs(list) do
+    self.on_event({ type = 'tool_execution_start', toolCallId = call.id, toolName = call.tool, args = call.args })
+  end
+end
+
 --- @param msg table
 function Handle:on_message(msg)
   if msg.method == nil then
@@ -339,19 +356,52 @@ function Handle:on_message(msg)
     if not self.working then self:set_working(true) end
   elseif msg.method == 'item/started' and item.type == 'contextCompaction' then
     self.on_status({ type = 'working', state = 'compacting' })
+    self.on_event({ type = 'compaction_start' })
   elseif msg.method == 'item/started' and (item.type == 'commandExecution' or item.type == 'mcpToolCall') then
-    for _, call in ipairs(calls(item)) do
+    local started = calls(item)
+    for _, call in ipairs(started) do
       self.announced[call.id] = true
       self.log:tool_call(call.id, call.tool, call.args, self.turn_at)
     end
+    self:call_events(started, true)
   -- not of earlier turns, like commands that ran in the background, which the log can't add to
   elseif msg.method == 'item/completed' and params.turnId == self.turn then
     if item.type == 'userMessage' then self:read(item) end
+    local unannounced = vim.tbl_filter(function(call) return not self.announced[call.id] end, calls(item))
     add(self.log, item, self.announced, self.context, self.turn_at)
     if item.type == 'subAgentActivity' then self:subagents(item) end
-    if item.type == 'contextCompaction' then self.on_status({ type = 'working', state = 'working' }) end
+    if item.type == 'userMessage' then
+      self.on_event({ type = 'message_end', message = { role = 'user', content = event.text_of(item.content) } })
+    elseif item.type == 'agentMessage' then
+      self.on_event({
+        type = 'message_end',
+        message = { role = 'assistant', content = { { type = 'text', text = item.text } } },
+      })
+    elseif item.type == 'contextCompaction' then
+      self.on_status({ type = 'working', state = 'working' })
+      self.on_event({ type = 'message_end', message = { role = 'compactionSummary' } })
+      self.on_event({ type = 'compaction_end' })
+    else
+      self:call_events(unannounced, false)
+      for _, result in ipairs(results(item)) do
+        self.on_event({
+          type = 'message_end',
+          message = {
+            role = 'toolResult',
+            toolCallId = result.id,
+            content = result.output,
+            isError = not result.ok,
+            details = result.diff and { diff = result.diff } or nil,
+          },
+        })
+      end
+    end
   elseif msg.method == 'error' and not params.willRetry then
     self.log:error(params.error.message, self.turn_at)
+    self.on_event({
+      type = 'message_end',
+      message = { role = 'assistant', content = {}, errorMessage = params.error.message },
+    })
   elseif msg.method == 'thread/tokenUsage/updated' then
     self.on_status({
       type = 'info',
@@ -369,6 +419,7 @@ function Handle:on_message(msg)
     if #self.follow_ups > 0 then return self:start_turn(table.remove(self.follow_ups, 1)) end
     self:queue_update()
     self:set_working(false)
+    self.on_event({ type = 'agent_settled', aborted = params.turn.status == 'interrupted' })
   end
 end
 
@@ -524,6 +575,7 @@ function M.open(id, opts)
   local handle = setmetatable({
     log = log.new(opts.on_log, opts.on_status),
     on_status = opts.on_status,
+    on_event = opts.on_event or function() end,
     waiting = {},
     working = false,
     models = {},

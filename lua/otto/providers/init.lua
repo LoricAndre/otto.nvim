@@ -15,6 +15,7 @@
 --- @field config otto.ProviderConfig Of the session's buffer
 --- @field on_log fun(event: otto.Event)
 --- @field on_status fun(status: otto.Status)
+--- @field on_event? fun(event: table) Live agent events, not saved history
 
 --- @class otto.Handle A running agent. Its methods that are async run inside tasks, and raise their errors
 --- @field replay async fun(self: otto.Handle) Adds the session's history to the log

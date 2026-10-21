@@ -4,6 +4,8 @@
   <strong>Experimental</strong> neovim-native agent interface
 </p>
 
+Requires Neovim 0.13 nightly or newer with `vim.async`.
+
 **otto.nvim** is an agent interface for neovim, rendering natively in a prompt buffer (`:h prompt-buffer`), not a TUI! Currently, only Pi, Codex and Claude Code are supported via RPC.
 
 ```lua
@@ -104,6 +106,48 @@ vim.keymap.set('i', '<C-j>', '<Plug>(otto-submit)', { buffer = true })
 require('otto.config').set({ providers = { claude = { model = 'claude-sonnet-5-5' } } }, { bufnr = 0 })
 ```
 
+## Agent events
+
+Use Neovim `User` autocommands to run logic when an agent changes status or sends a
+message. Pi, Claude Code, and Codex use the same event names and data format.
+
+```lua
+vim.api.nvim_create_autocmd('User', {
+  pattern = 'OttoAgentSettled',
+  callback = function(args)
+    local data = args.data
+    if not data.event.aborted then
+      vim.notify(data.backend .. ' finished: ' .. data.id)
+    end
+    -- Use data.bufnr to access the session, which can be in a hidden buffer.
+  end,
+})
+```
+
+| User event | When it runs |
+| --- | --- |
+| `OttoSessionStart` | A new or resumed session has loaded its history and state; also runs after restart |
+| `OttoAgentStart` | The agent starts work |
+| `OttoAgentSettled` | The agent stops work; `data.event.aborted` indicates an interrupted run |
+| `OttoMessageEnd` | A complete new message is received; see `data.event.message` |
+| `OttoToolExecutionStart` | A tool starts; includes `toolCallId`, `toolName`, and `args` in `data.event` |
+| `OttoCompactionStart` | Context compaction starts |
+| `OttoCompactionEnd` | Context compaction ends |
+| `OttoQueueUpdate` | The prompt queue changes; includes `steering` and `followUp` in `data.event` |
+
+Every callback receives `args.data = { bufnr, backend, id, event }`. `backend` is
+`pi`, `claude`, or `codex`; `id` is the session ID. `event` is a copy of Otto's
+normalized agent event, with its original snake-case `type`, such as
+`agent_settled` or `message_end`. Optional fields depend on what the harness reports.
+Otto generates `OttoSessionStart` for each harness. Other events run only when
+reported by the harness; Otto does not infer missing tool or compaction events.
+
+Callbacks run after Otto updates the prompt or transcript for that event.
+Messages from saved history do not trigger `OttoMessageEnd`. Callback errors do
+not stop later agent events. Events from old clients after restart or buffer
+unload are ignored. The session buffer need not be current: use
+`args.data.bufnr`, not `args.buf`.
+
 ## Extension UI
 
 Otto renders the UI data that Pi sends through RPC. No extra UI dependencies are needed.
@@ -165,5 +209,18 @@ Start a named session with `:Otto pi ui-demo`, then submit `/otto-ui-demo` in it
 prompt. The command displays widgets, status text, a selection, and an editor dialog.
 A named session avoids Otto's automatic naming request. The demo command itself
 does not make a model request. Restart the session to clear the demo title.
+
+## Tests
+
+Use Neovim 0.13 nightly or newer with `vim.async`.
+The tests use Lua assertions and process stubs. They do not start agents or make
+provider requests. Use the `vim-async` branch of `blink.lib`.
+
+```sh
+nvim --headless -u NONE --cmd 'set rtp+=/path/to/blink.lib' -l tests/config.lua
+nvim --headless -u NONE --cmd 'set rtp+=/path/to/blink.lib' -l tests/ui.lua
+nvim --headless -u NONE --cmd 'set rtp+=/path/to/blink.lib' -l tests/events.lua
+stylua --check lua plugin tests
+```
 
 Unlike my other projects, this project has been AI assisted, use at your own risk!

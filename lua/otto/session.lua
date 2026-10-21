@@ -39,11 +39,35 @@ local util = require('otto.util')
 --- @field follow_up? boolean Whether the prompt being submitted waits for the agent to finish, instead of steering
 --- @field now? boolean Whether the prompt being submitted interrupts the agent, which then goes on with it
 --- @field recall? otto.Recall Where the prompt is in the history
+--- @field closed? boolean
+--- @field editors table<fun(), true> Cancel functions of open editors
 --- @field requests vim.async.Semaphore Answered one at a time, since pickers can't show two at once
 local Session = {}
 Session.__index = Session
 
 local M = {}
+local user_events = {
+  session_start = 'OttoSessionStart',
+  agent_start = 'OttoAgentStart',
+  agent_settled = 'OttoAgentSettled',
+  message_end = 'OttoMessageEnd',
+  tool_execution_start = 'OttoToolExecutionStart',
+  compaction_start = 'OttoCompactionStart',
+  compaction_end = 'OttoCompactionEnd',
+  queue_update = 'OttoQueueUpdate',
+}
+
+function Session:emit(event)
+  if self.closed or not vim.api.nvim_buf_is_loaded(self.bufnr) then return end
+  local pattern = user_events[event.type]
+  if pattern == nil then return end
+  local ok, err = pcall(vim.api.nvim_exec_autocmds, 'User', {
+    pattern = pattern,
+    modeline = false,
+    data = { bufnr = self.bufnr, backend = self.provider.name, id = self.state.id, event = vim.deepcopy(event) },
+  })
+  if not ok then util.notify(tostring(err)) end
+end
 
 --- @type table<integer, otto.Session> by buffer
 M.sessions = {}
@@ -260,6 +284,7 @@ function M.load(bufnr, name)
     config = config.get({ bufnr = bufnr }).providers[provider.name],
     on_log = function(event) session:on_log(event) end,
     on_status = function(status) session:on_status(status) end,
+    on_event = function(event) session:emit(event) end,
   })
   M.sessions[bufnr] = session
   if session.handle.read_only then vim.bo[bufnr].modifiable = false end
@@ -272,6 +297,7 @@ function M.load(bufnr, name)
     session.handle:replay()
     -- after the history, since Claude Code only lists its commands once it starts
     session.state.commands = session.handle:commands()
+    session:emit({ type = 'session_start' })
   end)
 end
 

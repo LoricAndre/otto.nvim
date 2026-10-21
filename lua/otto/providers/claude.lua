@@ -366,6 +366,7 @@ end
 --- @field log otto.Log
 --- @field state otto.ClaudeState
 --- @field on_status fun(status: otto.Status)
+--- @field on_event fun(event: table)
 --- @field init? table Response to `initialize`, with the commands and models
 --- @field init_error? string When `initialize` failed
 --- @field waiting fun()[] Waiting for `init`
@@ -476,13 +477,16 @@ end
 function Handle:queue_update()
   local texts = vim.tbl_map(function(queued) return queued.text end, self.queue)
   self.on_status({ type = 'queue', steering = texts, follow_up = {} })
+  self.on_event({ type = 'queue_update', steering = texts, followUp = {} })
 end
 
 --- @param working boolean
 function Handle:set_working(working)
+  local started = working and not self.working
   self.working = working
   self.thinking = false
   self.on_status({ type = 'working', state = working and 'working' or nil })
+  if started then self.on_event({ type = 'agent_start' }) end
 end
 
 --- Claude Code echoes prompts once it reads them, see `--replay-user-messages`
@@ -507,6 +511,7 @@ function Handle:take(uuid)
   self.taken[uuid] = true
   table.insert(self.state.prompts, { uuid = uuid, parent = self.state.last, text = vim.trim(text) })
   self.log:user(vim.trim(text))
+  self.on_event({ type = 'message_end', message = { role = 'user', content = vim.trim(text) } })
 end
 
 --- Claude Code asks before using tools, unless it's been allowed to
@@ -542,6 +547,70 @@ function Handle:permission(msg)
   })
 end
 
+--- Complete live messages, separate from the log used to replay saved history.
+function Handle:message_events(msg)
+  if msg.isSidechain or msg.isMeta or not msg.message then return end
+  local content = msg.message.content
+  if msg.isCompactSummary or msg.isSynthetic then
+    self.on_event({
+      type = 'message_end',
+      message = {
+        role = 'compactionSummary',
+        summary = event.text_of(content),
+        tokensBefore = self.state.compaction.before,
+        tokensAfter = self.state.compaction.after,
+      },
+    })
+  elseif msg.type == 'assistant' then
+    local parts = {}
+    for _, block in ipairs(content or {}) do
+      if block.type == 'text' then table.insert(parts, { type = 'text', text = block.text }) end
+      if block.type == 'tool_use' then
+        local name, args = (tools[block.name] or function(input) return block.name, input end)(block.input)
+        table.insert(parts, { type = 'toolCall', id = block.id, name = name, arguments = args })
+      end
+    end
+    self.on_event({ type = 'message_end', message = { role = 'assistant', content = parts } })
+    for _, part in ipairs(parts) do
+      if part.type == 'toolCall' then
+        self.on_event({
+          type = 'tool_execution_start',
+          toolCallId = part.id,
+          toolName = part.name,
+          args = part.arguments,
+        })
+      end
+    end
+  else
+    local results = false
+    for _, block in ipairs(type(content) == 'table' and content or {}) do
+      if block.type == 'tool_result' then
+        results = true
+        local patch = vim.tbl_get(msg.toolUseResult or msg.tool_use_result or {}, 'structuredPatch')
+        self.on_event({
+          type = 'message_end',
+          message = {
+            role = 'toolResult',
+            toolCallId = block.tool_use_id,
+            content = event.text_of(block.content),
+            isError = block.is_error,
+            details = patch and { diff = diff_lines(patch) },
+          },
+        })
+      end
+    end
+    local text = event.text_of(content)
+    if
+      not results
+      and text ~= ''
+      and not vim.startswith(text, '<')
+      and not vim.startswith(text, '[Request interrupted')
+    then
+      self.on_event({ type = 'message_end', message = { role = 'user', content = text } })
+    end
+  end
+end
+
 --- @param msg table
 function Handle:on_message(msg)
   if msg.type == 'control_response' then
@@ -562,10 +631,12 @@ function Handle:on_message(msg)
     end
     if msg.subtype == 'status' and msg.status == 'compacting' then
       self.on_status({ type = 'working', state = 'compacting' })
+      self.on_event({ type = 'compaction_start' })
     end
     if msg.subtype == 'compact_boundary' then
       add(self.log, self.state, msg)
       self.on_status({ type = 'working', state = self.working and 'working' or nil })
+      self.on_event({ type = 'compaction_end' })
     end
     if msg.subtype == 'session_title_changed' then self.log:info({ name = msg.title }) end
     if msg.subtype == 'background_tasks_changed' or vim.startswith(msg.subtype or '', 'task_') then self:task(msg) end
@@ -577,6 +648,7 @@ function Handle:on_message(msg)
   elseif msg.type == 'assistant' or msg.type == 'user' then
     if msg.type == 'user' and type(msg.message.content) == 'string' then self:read(msg.message.content) end
     add(self.log, self.state, msg)
+    self:message_events(msg)
   elseif msg.type == 'stream_event' and msg.parent_tool_use_id == nil then
     local stream = msg.event
     if stream.type == 'content_block_start' and stream.content_block.type == 'thinking' then
@@ -596,6 +668,7 @@ function Handle:on_message(msg)
       if not task.background then self.tasks[id] = nil end
     end
     self:background_update()
+    self.on_event({ type = 'agent_settled', aborted = msg.subtype == 'error_during_execution' })
   end
 end
 
@@ -835,6 +908,7 @@ function M.open(id, opts)
     log = log.new(opts.on_log, opts.on_status),
     state = new_state(id),
     on_status = opts.on_status,
+    on_event = opts.on_event or function() end,
     waiting = {},
     model = opts.config.model,
     effort = opts.config.effort,
