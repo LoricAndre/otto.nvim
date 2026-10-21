@@ -57,12 +57,12 @@ function M.draw(bufnr)
   M.pin(bufnr)
 end
 
---- Keeps the end of the buffer at the bottom of the window while in the prompt, as output arrives above it
+--- Keeps the end of the buffer at the bottom of the window while in the prompt, as output arrives above it and folds
+--- change, so that the prompt stays in view without scrolling past the end
 --- @param bufnr integer
 function M.pin(bufnr)
   if vim.api.nvim_get_current_buf() ~= bufnr then return end
-  local in_prompt = vim.fn.line('.') >= vim.api.nvim_buf_get_mark(bufnr, ':')[1]
-  if vim.fn.mode() ~= 'i' and not in_prompt then return end
+  if vim.fn.line('.') < vim.api.nvim_buf_get_mark(bufnr, ':')[1] then return end
   local cursor = vim.api.nvim_win_get_cursor(0)
   -- the prompt can span lines, and the cursor may not be on the last
   vim.api.nvim_win_set_cursor(0, { vim.api.nvim_buf_line_count(bufnr), 0 })

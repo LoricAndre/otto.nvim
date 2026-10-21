@@ -59,7 +59,7 @@ local function first_line(text) return text:match('[^\n]*') end
 --- @field top integer 1-indexed, like Ex ranges
 --- @field bottom integer
 --- @field nested boolean Inside the fold of a group
---- @field open? boolean The group that the agent is running, until the transcript moves past it
+--- @field open? boolean A group of the turn that the agent is running, until it settles
 
 --- Runs `fn` in each window that shows the buffer, since folds belong to windows. Windows fold the buffer once they
 --- show it, see `M.fold`
@@ -184,13 +184,12 @@ end
 --- @return boolean
 local function tools_follow(session) return session.tail == 'tool' or session.tail == 'text' end
 
---- Inserts lines at the end of the transcript. Ends the group of tools, which closes
+--- Inserts lines at the end of the transcript. Ends the group of tools
 --- @param session otto.Session
 --- @param kind 'user' | 'text' | 'tool' | 'error' | 'note'
 --- @param lines string[]
 --- @return integer row of the first line
 local function block(session, kind, lines)
-  if session.group ~= nil then close(session.bufnr, session.group.fold) end
   session.group = nil
   if kind == 'user' then trim_turns(session.bufnr) end
   local start
@@ -541,11 +540,16 @@ local function grouped_block(session, name, failed, header, sections, count)
   if #lines > 1 then fold(bufnr, row + 1, row + #lines, true) end
   if group.fold == nil then
     group.fold = fold(bufnr, group.row + 1, row + #lines, false)
-    open(bufnr, group.fold) -- while the agent runs it
+    -- until the agent settles, unlike the groups of resumed sessions
+    if session.started ~= nil then
+      open(bufnr, group.fold)
+      table.insert(session.opened, group.fold)
+    end
   else
     group.fold.bottom = row + #lines
     refold(bufnr, group.fold)
   end
+  prompt.pin(bufnr) -- the fold changed the height of the transcript
   session.group = group
   return row
 end
@@ -677,6 +681,17 @@ function M.submitted(session, text)
     session.bufnr,
     function(_, prompt_row) vim.api.nvim_buf_set_lines(session.bufnr, prompt_row - line_count, prompt_row, false, {}) end
   )
+end
+
+--- Closes the groups of tools that the agent ran
+--- @param session otto.Session
+function M.settled(session)
+  for _, opened in ipairs(session.opened) do
+    -- unless the line limit removed it
+    if vim.list_contains(folds[session.bufnr], opened) then close(session.bufnr, opened) end
+  end
+  session.opened = {}
+  prompt.pin(session.bufnr)
 end
 
 --- Notes how long the agent worked, like "Worked for 2m 10s · done 4:19 p.m"

@@ -12,6 +12,7 @@
 --- @field started? integer When the agent started working, in seconds since the epoch
 --- @field text_row? integer First row of the last text block
 --- @field group? otto.Group Tools since the last text
+--- @field opened otto.Fold[] Groups of tools of the turn that the agent is running, open until it settles
 --- @field state? otto.State Shown in the winbar
 --- @field naming? boolean Whether a name is on its way, from the user or `name_after`
 --- @field follow_up? boolean Whether the prompt being submitted waits for pi to finish, instead of steering
@@ -52,6 +53,7 @@ local function on_event(session, event)
     prompt.set_status(session.bufnr, nil)
     if session.started ~= nil then transcript.worked(session, os.time() - session.started, event.aborted) end
     session.started = nil
+    transcript.settled(session)
   elseif event.type == 'tool_execution_start' then
     transcript.tool_started(session, event)
   elseif event.type == 'compaction_start' then
@@ -176,7 +178,7 @@ local function load(bufnr)
   local args = name and { '--name', name } or {}
   --- @type otto.Session
   --- @diagnostic disable-next-line: missing-fields
-  local session = { bufnr = bufnr, backend = backend, id = id, tools = {}, edits = {}, commands = {} }
+  local session = { bufnr = bufnr, backend = backend, id = id, tools = {}, edits = {}, commands = {}, opened = {} }
   session.naming = #args > 0 -- the name is on its way already
   local function events(event) on_event(session, event) end
   if backend == 'claude' then
@@ -356,8 +358,8 @@ vim.api.nvim_create_autocmd({ 'TextChanged', 'TextChangedI' }, {
   pattern = patterns,
   callback = function(ev) highlight.prompt(ev.buf) end,
 })
--- like when the command line grows, which would cover the end of the prompt
-vim.api.nvim_create_autocmd('WinResized', {
+-- like when the command line grows, which would cover the end of the prompt, or scrolling past the end
+vim.api.nvim_create_autocmd({ 'WinResized', 'WinScrolled' }, {
   group = group,
   callback = function()
     local bufnr = vim.api.nvim_get_current_buf()
