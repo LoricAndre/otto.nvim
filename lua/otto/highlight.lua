@@ -17,6 +17,7 @@ local skipped = { spell = true, nospell = true, conceal = true }
 --- @class otto.Place Where a line of the parsed text is in the buffer
 --- @field row integer 0-indexed
 --- @field col integer
+--- @field hidden? boolean Parsed for its context, but not highlighted
 
 --- @param places otto.Place[]
 --- @param row integer of the first line
@@ -58,7 +59,7 @@ local function highlight(bufnr, namespace, places, lines, lang)
           local place = places[line + 1]
           local first = line == range[1] and range[2] or 0
           local last = line == range[4] and range[5] or #(lines[line + 1] or '')
-          if place ~= nil and last > first then
+          if place ~= nil and not place.hidden and last > first then
             opts.end_col = place.col + last
             vim.api.nvim_buf_set_extmark(bufnr, namespace, place.row, place.col + first, opts)
           end
@@ -125,6 +126,70 @@ function M.lines(bufnr, row, indent, lines, filetype)
   local lang = vim.treesitter.language.get_lang(filetype)
   if lang == nil then return end
   lazily(bufnr, row, #lines, function(first) highlight(bufnr, ns, below({}, first, indent, #lines), lines, lang) end)
+end
+
+--- @param bufnr integer
+--- @param row integer
+--- @param indent integer
+--- @param lines string[]
+--- @param lang string
+local function diff(bufnr, row, indent, lines, lang)
+  local before = { lines = {}, places = {} }
+  local after = { lines = {}, places = {} }
+  for i, line in ipairs(lines) do
+    local sign = line:sub(1, 1)
+    local number, code = line:match('^.(%s*%d+ )(.*)$')
+    if number ~= nil then
+      local col = indent + 1 + #number
+      local opts = { end_col = col - 1, hl_group = 'OttoLineNumber' }
+      vim.api.nvim_buf_set_extmark(bufnr, ns, row + i - 1, indent + 1, opts)
+      if sign ~= '+' then
+        table.insert(before.lines, code)
+        -- the lines around the change highlight after it
+        table.insert(before.places, { row = row + i - 1, col = col, hidden = sign == ' ' })
+      end
+      if sign ~= '-' then
+        table.insert(after.lines, code)
+        table.insert(after.places, { row = row + i - 1, col = col })
+      end
+    end
+  end
+  highlight(bufnr, ns, before.places, before.lines, lang)
+  highlight(bufnr, ns, after.places, after.lines, lang)
+end
+
+--- Highlights a diff like pi's, with a line number after the sign of each line, as the language of its file, like
+--- delta. The lines before the change and after it parse apart, each with the lines around the change
+--- @param bufnr integer
+--- @param row integer 0-indexed, of the first line
+--- @param indent integer Columns before the lines in the buffer
+--- @param lines string[]
+--- @param filetype string
+function M.diff(bufnr, row, indent, lines, filetype)
+  local lang = vim.treesitter.language.get_lang(filetype)
+  if lang == nil then return end
+  lazily(bufnr, row, #lines, function(first) diff(bufnr, first, indent, lines, lang) end)
+end
+
+--- Highlights the locations at the start of lines, like `path:12:` from grep
+--- @param bufnr integer
+--- @param row integer 0-indexed, of the first line
+--- @param indent integer Columns before the lines in the buffer
+--- @param lines string[]
+--- @return { index: integer, path: string, lnum: integer }[] of the lines with locations
+function M.locations(bufnr, row, indent, lines)
+  local locations = {}
+  for i, line in ipairs(lines) do
+    local path, number = line:match('^([^:%s][^:]*)[:-](%d+)[:-]')
+    if path ~= nil then
+      table.insert(locations, { index = i, path = path, lnum = tonumber(number) })
+      local col = indent + #path + 1
+      vim.api.nvim_buf_set_extmark(bufnr, ns, row + i - 1, indent, { end_col = col - 1, hl_group = 'OttoPath' })
+      local opts = { end_col = col + #number, hl_group = 'OttoLineNumber' }
+      vim.api.nvim_buf_set_extmark(bufnr, ns, row + i - 1, col, opts)
+    end
+  end
+  return locations
 end
 
 --- Highlights the prompt as markdown again, after it changed

@@ -17,7 +17,7 @@ local tools = {
   Edit = function(input) return 'edit', { path = input.file_path } end,
   MultiEdit = function(input) return 'edit', { path = input.file_path } end,
   Write = function(input) return 'write', { path = input.file_path, content = input.content } end,
-  Bash = function(input) return 'bash', { command = input.command } end,
+  Bash = function(input) return 'bash', { command = input.command, description = input.description } end,
   Grep = function(input) return 'grep', { pattern = input.pattern, path = input.path } end,
   Glob = function(input) return 'find', { pattern = input.pattern, path = input.path } end,
   WebSearch = function(input) return 'web_search', { query = input.query } end,
@@ -115,11 +115,14 @@ local function messages(entry, compaction)
   local results = {}
   for _, block in ipairs(type(content) == 'table' and content or {}) do
     if block.type == 'tool_result' then
-      local patch = vim.tbl_get(entry.toolUseResult or entry.tool_use_result or {}, 'structuredPatch')
+      local details = entry.toolUseResult or entry.tool_use_result or {}
+      local patch = vim.tbl_get(details, 'structuredPatch')
+      -- reads number their lines, unlike pi's, but come with the file's content too
+      local file = #content == 1 and vim.tbl_get(details, 'file', 'content') or nil
       table.insert(results, {
         role = 'toolResult',
         toolCallId = block.tool_use_id,
-        content = text_of(block.content) or '',
+        content = file or text_of(block.content) or '',
         isError = block.is_error,
         details = patch and { diff = diff(patch) },
       })

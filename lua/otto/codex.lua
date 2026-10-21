@@ -24,7 +24,9 @@ end
 local function shell_tool(item)
   local actions = item.commandActions or {}
   local action = #actions == 1 and actions[1] or {}
-  if action.type == 'read' then return 'read', { path = action.path } end
+  -- like `sed -n '10,20p' file`
+  local offset = tonumber(action.command and action.command:match("^sed %-n '?(%d+),") or nil)
+  if action.type == 'read' then return 'read', { path = action.path, offset = offset } end
   if action.type == 'listFiles' then return 'ls', { path = action.path or '.' } end
   if action.type == 'search' then return 'grep', { pattern = action.query or action.command, path = action.path } end
   return 'bash', { command = command(item) }
@@ -89,7 +91,7 @@ local function results(item)
   end
   if item.type == 'commandExecution' then
     local failed = item.status ~= 'completed' or (item.exitCode or 0) ~= 0
-    return { result(item.id, item.aggregatedOutput or '', failed) }
+    return { result(item.id, item.aggregatedOutput or '', failed, { exitCode = item.exitCode }) }
   end
   if item.type == 'webSearch' then return { result(item.id, '', false) } end
   if item.type == 'mcpToolCall' then

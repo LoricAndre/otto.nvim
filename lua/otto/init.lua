@@ -71,6 +71,18 @@ local function on_event(session, event)
   end
 end
 
+--- Opens the location in the previous window, or this one when there's no other
+--- @param target otto.Target
+local function open(target)
+  local previous = vim.fn.win_getid(vim.fn.winnr('#'))
+  if previous ~= 0 and previous ~= vim.api.nvim_get_current_win() then vim.api.nvim_set_current_win(previous) end
+  vim.cmd.edit(vim.fn.fnameescape(target.path))
+  if target.lnum ~= nil then
+    vim.api.nvim_win_set_cursor(0, { math.min(target.lnum, vim.api.nvim_buf_line_count(0)), 0 })
+    vim.cmd('normal! zz')
+  end
+end
+
 --- @param session otto.Session
 local function keymaps(session)
   local client = session.client
@@ -80,7 +92,12 @@ local function keymaps(session)
 
   -- submitting steers while pi is working. <CR> in insert mode adds a line, like <S-CR> in prompt buffers
   map('i', '<CR>', '<S-CR>', 'New line')
-  map('n', '<CR>', 'A<CR><Esc>', 'Submit')
+  map('n', '<CR>', function()
+    local target = transcript.target_at(session.bufnr, vim.fn.line('.') - 1)
+    if target == nil then return 'A<CR><Esc>' end
+    vim.schedule(function() open(target) end) -- windows can't change while the mapping evaluates
+    return ''
+  end, 'Open the location under the cursor, or submit', true)
   map('n', '<C-s>', 'A<CR><Esc>', 'Submit')
   map('i', '<C-s>', '<CR>', 'Submit')
   map('i', '<M-CR>', function()
