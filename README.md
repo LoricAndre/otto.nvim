@@ -4,7 +4,7 @@
   <strong>Experimental</strong> neovim-native agent interface
 </p>
 
-**otto.nvim** is an agent interface for neovim, rendering natively in a prompt buffer (`:h prompt-buffer`), not a TUI! Currently, only Pi (specialized to my configuration), Codex and Claude Code are supported via RPC.
+**otto.nvim** is an agent interface for neovim, rendering natively in a prompt buffer (`:h prompt-buffer`), not a TUI! Currently, only Pi, Codex and Claude Code are supported via RPC.
 
 ```lua
 vim.pack.add({
@@ -42,6 +42,30 @@ Pickers use [minibuffer.nvim](https://github.com/saghen/minibuffer.nvim) when it
 | `\q` | Edits of the session to quickfix |
 
 ## Configuration
+
+```lua
+require('otto').setup({
+  picker = 'vim_ui', -- 'auto' uses minibuffer when set up; 'minibuffer' requires it
+  providers = {
+    pi = {
+      cmd = { '/opt/Pi Tools/bin/pi', '--model', 'provider/model' },
+      args = {},
+      env = {
+        PI_CODING_AGENT_DIR = '/path/to/agent',
+        PI_CODING_AGENT_SESSION_DIR = '/path/to/sessions',
+      },
+    },
+  },
+})
+```
+
+Pi session storage uses `PI_CODING_AGENT_SESSION_DIR`, then
+`<PI_CODING_AGENT_DIR>/sessions`, then `~/.pi/agent/sessions`. Configured environment
+values take precedence over inherited values. Empty values count as unset. Paths
+expand home and environment variables, but not glob characters. Otto keeps Pi's
+encoded project subdirectories and passes a session-root override through
+`--session-dir`. Main sessions and one-shot helper calls use the same settings.
+Commands run directly without a shell; each `cmd` and `args` entry stays one argument.
 
 Otto works without `setup()`. These are the defaults, which `setup()` merges into. See `lua/otto/config.lua` for every keymap.
 
