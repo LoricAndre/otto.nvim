@@ -1,12 +1,10 @@
--- Otto: pi (https://pi.dev) or Claude Code in a prompt buffer, so only the prompt below the markdown transcript is editable.
--- buffers are named pi://<session id> or claude://<session id>, so the agent resumes them by id, :mksession restores
--- them and pickers find them
+-- Experimental neovim-native agent interface
 
 --- @class otto.Session
 --- @field bufnr integer
---- @field backend 'pi' | 'claude' The agent, which names the buffer, like claude://<session id>
+--- @field backend 'pi' | 'claude' | 'codex' The agent, which names the buffer, like claude://<session id>
 --- @field id string
---- @field client otto.Client | otto.ClaudeClient
+--- @field client otto.Client | otto.ClaudeClient | otto.CodexClient
 --- @field tools table<string, { name: string, args: table }> Tool calls by id, until their result arrives
 --- @field edits vim.quickfix.entry[] Files that pi edited, at the first changed line
 --- @field commands otto.Command[] Extension commands, prompt templates and skills
@@ -19,6 +17,7 @@
 --- @field follow_up? boolean Whether the prompt being submitted waits for pi to finish, instead of steering
 
 local claude = require('otto.claude')
+local codex = require('otto.codex')
 local commands = require('otto.commands')
 require('otto.highlights')
 local lsp = require('otto.lsp')
@@ -33,7 +32,7 @@ local M = {}
 
 local sessions = {} --- @type table<integer, otto.Session> by buffer
 local names = {} --- @type table<string, string> of new sessions by buffer name, until they start
--- so that plugins which look up the parser by filetype, like blink.pairs, find markdown
+
 vim.treesitter.language.register('markdown', 'otto')
 
 local winbar_events = { 'agent_settled', 'compaction_end', 'thinking_level_changed', 'session_info_changed' }
@@ -62,6 +61,10 @@ local function on_event(session, event)
     if event.result ~= nil then transcript.compacted(session, event.result.summary, event.result.tokensBefore) end
   elseif event.type == 'message_end' then
     transcript.render(session, event.message)
+  elseif event.type == 'session_created' then
+    -- Codex creates the ids of its sessions, which then name the buffer
+    session.id = event.id
+    vim.api.nvim_buf_set_name(session.bufnr, session.backend .. '://' .. event.id)
   end
 end
 
@@ -147,9 +150,10 @@ end
 local function load(bufnr)
   local uri = vim.api.nvim_buf_get_name(bufnr)
   local backend, id = uri:match('^(%a+)://(.+)')
-  -- both agents take a display name, which keeps them from naming the session after its first prompt
-  local args = names[uri] and { '--name', names[uri] } or {}
+  -- agents take a display name, which keeps them from naming the session after its first prompt
+  local name = names[uri]
   names[uri] = nil
+  local args = name and { '--name', name } or {}
   --- @type otto.Session
   --- @diagnostic disable-next-line: missing-fields
   local session = { bufnr = bufnr, backend = backend, id = id, tools = {}, edits = {}, commands = {} }
@@ -157,6 +161,8 @@ local function load(bufnr)
   local function events(event) on_event(session, event) end
   if backend == 'claude' then
     session.client = claude.start(id, events, args)
+  elseif backend == 'codex' then
+    session.client = codex.start(id, events, name)
   else
     session.client = rpc.start(id, vim.list_extend({ '--session-id', id }, args), events)
   end
@@ -198,9 +204,9 @@ end
 function M.open(id) vim.cmd.edit('pi://' .. id:gsub('[^%w._-]+', '_')) end
 
 --- Opens a new session, which is named after its first prompt unless it's given a name. pi's ids are the name, or
---- when the session started, and Claude Code's are always UUIDs
+--- when the session started, and Claude Code's are always UUIDs. Codex's start like pi's, until it creates them
 --- @param name? string
---- @param backend? 'pi' | 'claude' Defaults to pi
+--- @param backend? 'pi' | 'claude' | 'codex' Defaults to pi
 function M.new(name, backend)
   local id = backend == 'claude' and claude.uuid() or (name or os.date('%Y_%m_%d_%H%M%S')):gsub('[^%w._-]+', '_')
   local uri = ('%s://%s'):format(backend or 'pi', id)
@@ -285,7 +291,7 @@ local function is_empty(bufnr)
 end
 
 local group = vim.api.nvim_create_augroup('otto', {})
-local patterns = { 'pi://*', 'claude://*' }
+local patterns = { 'pi://*', 'claude://*', 'codex://*' }
 vim.api.nvim_create_autocmd('BufReadCmd', {
   group = group,
   pattern = patterns,
@@ -361,6 +367,7 @@ vim.api.nvim_create_autocmd('BufUnload', {
 local subcommands = {
   pi = function(name) M.new(name, 'pi') end,
   claude = function(name) M.new(name, 'claude') end,
+  codex = function(name) M.new(name, 'codex') end,
   send = function(_, cmd) M.send(cmd.line1, cmd.line2) end,
   resume = function(id)
     if id == nil then return resume.pick() end
@@ -371,7 +378,7 @@ local subcommands = {
   pick = pick_session,
 }
 
--- :Otto pi [name], :Otto claude [name], :Otto resume [id], :Otto pick, which :Otto defaults to, and :Otto send for the
+-- :Otto pi [name], :Otto claude [name], :Otto codex [name], :Otto resume [id], :Otto pick, which :Otto defaults to, and :Otto send for the
 -- current line or a range
 vim.api.nvim_create_user_command('Otto', function(cmd)
   local subcommand = subcommands[cmd.fargs[1] or 'pick']

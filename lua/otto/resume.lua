@@ -1,4 +1,5 @@
--- The current folder's saved sessions, read from the session files of pi (see docs/session-format.md) and Claude Code
+-- The current folder's saved sessions, read from the session files of pi (see docs/session-format.md), Claude Code
+-- and Codex
 
 local pick = require('otto.pick')
 
@@ -12,7 +13,9 @@ local M = {}
 --- @field messages integer
 --- @field modified integer Seconds since the epoch
 
-local cache = {} --- @type table<string, otto.SavedSession> by file, while unmodified
+--- @type table<string, { modified: integer, session?: otto.SavedSession }> by file, while unmodified, without the
+--- sessions of other folders
+local cache = {}
 
 --- @param file string
 --- @param modified integer
@@ -64,20 +67,66 @@ function M.read_claude(file, modified)
   return session
 end
 
+--- @return table<string, string> names of Codex's sessions by id
+local function codex_names()
+  local names = {}
+  local index = vim.fs.normalize('~/.codex/session_index.jsonl')
+  if vim.uv.fs_stat(index) == nil then return names end
+  for line in io.lines(index) do
+    local entry = vim.json.decode(line)
+    names[entry.id] = entry.thread_name
+  end
+  return names
+end
+
+--- @param file string
+--- @param modified integer
+--- @return otto.SavedSession?
+local function read_codex(file, modified)
+  local lines = io.lines(file)
+  local meta = vim.json.decode(lines() or '{}').payload or {}
+  -- sub-agents, like its reviewer, have sessions of their own
+  if meta.cwd ~= vim.fn.getcwd() or type(meta.source) ~= 'string' then return end
+  local session = { id = meta.id, uri = 'codex://' .. meta.id, messages = 0, modified = modified }
+  local first_prompt
+  for line in lines do
+    if line:find('"type":"item_completed"', 1, true) then
+      session.messages = session.messages + 1
+      if first_prompt == nil and line:find('"type":"UserMessage"', 1, true) then
+        local content = vim.json.decode(line).payload.item.content
+        first_prompt = (content[1] or {}).text
+      end
+    end
+  end
+  session.title = first_prompt and vim.trim(first_prompt):gsub('%s+', ' ') or meta.id
+  return session
+end
+
 --- Newest first
 --- @return otto.SavedSession[]
 function M.list()
   local folder = vim.fn.getcwd():sub(2):gsub('[/\\:]', '-')
   local sessions = {}
-  local folders = {
-    [('~/.pi/agent/sessions/--%s--'):format(folder)] = read_pi,
-    [vim.fs.dirname(require('otto.claude').session_file(''))] = M.read_claude,
+  local globs = {
+    [('~/.pi/agent/sessions/--%s--/*.jsonl'):format(folder)] = read_pi,
+    [vim.fs.dirname(require('otto.claude').session_file('')) .. '/*.jsonl'] = M.read_claude,
+    ['~/.codex/sessions/**/rollout-*.jsonl'] = read_codex,
   }
-  for dir, read in pairs(folders) do
-    for _, file in ipairs(vim.fn.glob(dir .. '/*.jsonl', false, true)) do
+  for glob, read in pairs(globs) do
+    for _, file in ipairs(vim.fn.glob(glob, false, true)) do
       local modified = vim.uv.fs_stat(file).mtime.sec
-      if cache[file] == nil or cache[file].modified ~= modified then cache[file] = read(file, modified) end
-      table.insert(sessions, cache[file])
+      if cache[file] == nil or cache[file].modified ~= modified then
+        cache[file] = { modified = modified, session = read(file, modified) }
+      end
+      if cache[file].session ~= nil then table.insert(sessions, cache[file].session) end
+    end
+  end
+  -- Codex keeps the names apart from the sessions
+  local names = codex_names()
+  for _, session in ipairs(sessions) do
+    if names[session.id] ~= nil then
+      session.name = names[session.id]
+      session.title = session.name
     end
   end
   table.sort(sessions, function(a, b) return a.modified > b.modified end)
@@ -98,8 +147,10 @@ end
 --- @param session otto.SavedSession
 --- @return minibuffer.util.HighlightLine
 local function format(session)
-  -- Claude Code's ids are UUIDs, which only need their start to be told apart
-  local id = vim.startswith(session.uri, 'claude://') and 'claude ' .. session.id:sub(1, 8) or session.id
+  -- the ids of Claude Code and Codex are UUIDs, which only need their end to be told apart, since Codex's start with
+  -- when they were created
+  local backend = session.uri:match('^(%a+)://')
+  local id = backend == 'pi' and session.id or backend .. ' ' .. session.id:sub(-8)
   local details = ('%s  %d %4s'):format(id, session.messages, age(os.time() - session.modified))
   local width = vim.o.columns - 2 - vim.api.nvim_strwidth(details) -- the picker's margins
   return { { text = pick.column(session.title, width) .. ' ' }, { text = details, hl = 'Comment' } }

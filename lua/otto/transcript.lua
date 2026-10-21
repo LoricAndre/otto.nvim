@@ -406,7 +406,7 @@ local function grouped_block(session, name, failed, header, body, count)
   end
   highlight(bufnr, ns, row, #nested, header)
 
-  fold(bufnr, row + 1, row + #lines, true)
+  if #body > 0 then fold(bufnr, row + 1, row + #lines, true) end
   if group.fold == nil then
     group.fold = fold(bufnr, group.row + 1, row + #lines, false)
     open(bufnr, group.fold) -- while the agent runs it
@@ -439,7 +439,8 @@ local function tool(session, result)
     return tool_block(session, header, fenced(lines, lang))
   end
 
-  local output = vim.split(vim.trim(text_of(result.content)), '\n')
+  local text = vim.trim(text_of(result.content))
+  local output = text == '' and {} or vim.split(text, '\n')
   local unit = 'lines'
   -- the text of search results has HTML in it, but their details don't
   local results = name == 'web_search' and vim.tbl_get(result, 'details', 'results')
@@ -448,12 +449,12 @@ local function tool(session, result)
     unit = 'results'
   end
   if result.isError then
-    vim.list_extend(header, { { '  failed', 'OttoToolFailed' }, { ' ' .. output[1], 'OttoToolDetail' } })
+    vim.list_extend(header, { { '  failed', 'OttoToolFailed' }, { ' ' .. (output[1] or ''), 'OttoToolDetail' } })
   else
     vim.list_extend(header, { { '  done', 'OttoToolDone' }, { (' (%d %s)'):format(#output, unit), 'OttoToolDetail' } })
   end
   local count = name == 'web_fetch' and #args.urls or 1
-  local body = fenced(output, lang)
+  local body = #output > 0 and fenced(output, lang) or {}
   -- the header only shows the first line of commands
   local command = name == 'bash' and vim.split(vim.trim(args.command), '\n')
   if command and #command > 1 then body = vim.list_extend(fenced(command, 'bash'), body) end
@@ -538,13 +539,14 @@ end
 local function thousands(tokens) return math.floor(tokens / 1000) .. 'k' end
 
 --- @param session otto.Session
---- @param summary string
---- @param tokens_before integer
+--- @param summary? string which Codex doesn't share
+--- @param tokens_before? integer
 --- @param tokens_after? integer
 function M.compacted(session, summary, tokens_before, tokens_after)
   local tokens = tokens_after and ('  %s -> %s tokens'):format(thousands(tokens_before), thousands(tokens_after))
-    or ('  from %s tokens'):format(thousands(tokens_before))
-  local header = { { 'compacted', 'OttoToolName' }, { tokens, 'OttoToolDetail' } }
+    or tokens_before and ('  from %s tokens'):format(thousands(tokens_before))
+  local header = { { 'compacted', 'OttoToolName' }, tokens and { tokens, 'OttoToolDetail' } or nil }
+  if summary == nil then return highlight(session.bufnr, ns, block(session, 'note', { join(header) }), 0, header) end
   tool_block(session, header, fenced(vim.split(summary, '\n'), 'markdown'), 'note')
 end
 

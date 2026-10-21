@@ -3,7 +3,7 @@
 local M = {}
 
 -- of the agents, with the space after them, since Claude's is two cells wide
-local icons = { pi = '󰏿 ', claude = '󰛄  ' }
+local icons = { pi = '󰏿 ', claude = '󰛄  ', codex = '󰚩 ' }
 
 --- @class otto.State
 --- @field name? string
