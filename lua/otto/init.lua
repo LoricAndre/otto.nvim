@@ -10,6 +10,7 @@
 --- @field commands otto.Command[] Extension commands, prompt templates and skills
 --- @field tail? 'user' | 'text' | 'tool' | 'error' | 'note' Kind of the last block, which spaces the next one
 --- @field started? integer When the agent started working, in seconds since the epoch
+--- @field answered? boolean Whether the agent answered since it started, unlike for commands like /compact
 --- @field text_row? integer First row of the last text block
 --- @field group? otto.Group Tools since the last text
 --- @field opened otto.Fold[] Groups of tools of the turn that the agent is running, open until it settles
@@ -47,11 +48,14 @@ local function on_event(session, event)
   if vim.list_contains(winbar_events, event.type) then rpc.run(function() winbar.refresh(session) end) end
   if event.type == 'agent_start' then
     session.started = os.time()
+    session.answered = false
     prompt.set_status(session.bufnr, 'Working')
   elseif event.type == 'agent_settled' then
     vim.cmd.checktime() -- reloads the files the agent edited
     prompt.set_status(session.bufnr, nil)
-    if session.started ~= nil then transcript.worked(session, os.time() - session.started, event.aborted) end
+    if session.started ~= nil and (session.answered or event.aborted) then
+      transcript.worked(session, os.time() - session.started, event.aborted)
+    end
     session.started = nil
     transcript.settled(session)
   elseif event.type == 'tool_execution_start' then
@@ -71,6 +75,7 @@ local function on_event(session, event)
     prompt.set_status(session.bufnr, session.started ~= nil and 'Working' or nil)
     if event.result ~= nil then transcript.compacted(session, event.result.summary, event.result.tokensBefore) end
   elseif event.type == 'message_end' then
+    if event.message.role == 'assistant' then session.answered = true end
     transcript.render(session, event.message)
   elseif event.type == 'session_created' then
     -- Codex creates the ids of its sessions, which then name the buffer
@@ -127,6 +132,11 @@ local function keymaps(session)
   map({ 'n', 'i' }, '<C-CR>', function()
     if prompt.has_queue(session.bufnr) then client:request({ type = 'abort' }) end
   end, 'Send queued prompts now')
+  map('n', 'dd', function()
+    -- deleting the line that the prompt starts on, when it's the last, would leave the prompt nowhere to start
+    local prompt_lnum = vim.api.nvim_buf_get_mark(session.bufnr, ':')[1]
+    return vim.fn.line('.') == prompt_lnum and prompt_lnum == vim.fn.line('$') and 'cc<Esc>' or 'dd'
+  end, 'Delete line', true)
   map('n', 'gq', function()
     vim.fn.setqflist({}, ' ', { title = session.id .. ' edits', items = session.edits })
     vim.cmd.copen()
@@ -215,10 +225,11 @@ local function load(bufnr)
   transcript.clear(bufnr)
 
   rpc.run(function()
-    session.commands = session.client:call({ type = 'get_commands' }).commands
     for _, msg in ipairs(session.client:call({ type = 'get_messages' }).messages) do
       transcript.render(session, msg)
     end
+    -- after the history, since Claude Code only lists its commands once it starts
+    session.commands = session.client:call({ type = 'get_commands' }).commands
     winbar.refresh(session)
   end)
 end
