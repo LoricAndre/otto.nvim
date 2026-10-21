@@ -13,8 +13,8 @@ local user_ns = vim.api.nvim_create_namespace('otto.prompts')
 local summary_ns = vim.api.nvim_create_namespace('otto.summaries')
 local separator = { { ('─'):rep(500), 'OttoSeparator' } } -- clipped to the window
 local max_output_lines = 50
-local soft_limit = 3000 -- lines, which the transcript trims to by whole turns when a turn starts
-local hard_limit = 5000 -- lines, past which it trims within a turn
+local soft_limit = 5000 -- lines, which the transcript trims to by whole turns when a turn starts
+local hard_limit = 8000 -- lines, past which it trims within a turn
 local nested = '  ' -- indent of the tools in a group
 -- longer than the fences in tool output, like markdown files and heredocs, so that those don't close it
 local fence = '````'
