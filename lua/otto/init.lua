@@ -19,6 +19,7 @@
 local claude = require('otto.claude')
 local codex = require('otto.codex')
 local commands = require('otto.commands')
+local highlight = require('otto.highlight')
 require('otto.highlights')
 local lsp = require('otto.lsp')
 local pick = require('otto.pick')
@@ -33,6 +34,8 @@ local M = {}
 local sessions = {} --- @type table<integer, otto.Session> by buffer
 local names = {} --- @type table<string, string> of new sessions by buffer name, until they start
 
+-- the buffer has no parser, see `highlight.lua`, but plugins that parse it themselves, like blink.pairs, look up its
+-- language
 vim.treesitter.language.register('markdown', 'otto')
 
 local winbar_events = { 'agent_settled', 'compaction_end', 'thinking_level_changed', 'session_info_changed' }
@@ -168,6 +171,11 @@ local function load(bufnr)
   end
   sessions[bufnr] = session
 
+  -- before anything changes the buffer, which would start the window's folding, like treesitter's, which then parses
+  -- the whole transcript after every change
+  for _, win in ipairs(vim.fn.win_findbuf(bufnr)) do
+    vim.wo[win][0].foldmethod = 'manual'
+  end
   vim.bo[bufnr].buftype = 'prompt'
   vim.bo[bufnr].bufhidden = 'hide'
   vim.bo[bufnr].swapfile = false
@@ -175,7 +183,8 @@ local function load(bufnr)
   vim.b[bufnr].completion = true -- blink.cmp skips prompt buffers otherwise
   vim.fn.prompt_setprompt(bufnr, '')
   vim.fn.prompt_setcallback(bufnr, function(text) on_submit(session, text) end)
-  vim.treesitter.start(bufnr)
+  -- which may have been started for the filetype
+  vim.treesitter.stop(bufnr)
   keymaps(session)
   lsp.attach(session)
   transcript.clear(bufnr)
@@ -324,6 +333,11 @@ vim.api.nvim_create_autocmd({ 'BufEnter', 'CursorMoved', 'InsertEnter', 'TextCha
   callback = function(ev)
     vim.schedule(function() prompt.pin(ev.buf) end)
   end,
+})
+vim.api.nvim_create_autocmd({ 'TextChanged', 'TextChangedI' }, {
+  group = group,
+  pattern = patterns,
+  callback = function(ev) highlight.prompt(ev.buf) end,
 })
 -- like when the command line grows, which would cover the end of the prompt
 vim.api.nvim_create_autocmd('WinResized', {

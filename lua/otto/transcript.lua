@@ -1,8 +1,10 @@
 -- The transcript is markdown above the prompt, which only the plugin edits, and only by appending. Messages are blocks
--- separated by an empty line, except for tools, which follow the text that explains them. Edits fold on their own, and
--- other tools fold under a summary at the end of that text. Prompts are highlighted like the quickfix line. An empty
+-- separated by an empty line, except for tools, which follow the text that explains them. Their output is indented below
+-- them, highlighted as its language, see `highlight.lua`. Edits fold on their own, and other tools fold under a summary
+-- at the end of that text. Prompts are highlighted like the quickfix line. An empty
 -- line and a separator come before the prompt being written. Long transcripts lose their oldest turns, see `trim_turns`
 
+local highlight = require('otto.highlight')
 local prompt = require('otto.prompt')
 
 local M = {}
@@ -16,8 +18,7 @@ local max_output_lines = 50
 local soft_limit = 5000 -- lines, which the transcript trims to by whole turns when a turn starts
 local hard_limit = 8000 -- lines, past which it trims within a turn
 local nested = '  ' -- indent of the tools in a group
--- longer than the fences in tool output, like markdown files and heredocs, so that those don't close it
-local fence = '````'
+local body_indent = '  ' -- of the lines below the header of a tool
 local folds = {} --- @type table<integer, otto.Fold[]> by buffer, see `fold`
 
 --- How groups summarize their tools, like "read 2 files", by the text that counts them
@@ -139,6 +140,7 @@ end
 --- @param row integer 0-indexed
 local function remove_above(bufnr, row)
   vim.api.nvim_buf_clear_namespace(bufnr, -1, 0, row)
+  highlight.forget(bufnr)
   modify(bufnr, function() vim.api.nvim_buf_set_lines(bufnr, 0, row, false, {}) end)
   -- windows move their folds with the lines, but windows that show the buffer later fold from these
   folds[bufnr] = vim.tbl_filter(function(existing) return existing.top > row end, folds[bufnr])
@@ -209,7 +211,8 @@ local function block(session, kind, lines)
   return start
 end
 
---- @alias otto.Chunks [string, string?][] Text and highlight group pairs, like virtual text
+--- @alias otto.Chunks { [1]: string, [2]: string?, filetype?: string }[] Text and highlight group pairs, like virtual
+--- text, or text that highlights as its filetype
 
 --- @param chunks otto.Chunks
 --- @return string
@@ -222,33 +225,80 @@ end
 --- @param row integer
 --- @param col integer where the chunks start
 --- @param chunks otto.Chunks
-local function highlight(bufnr, namespace, row, col, chunks)
+local function highlight_chunks(bufnr, namespace, row, col, chunks)
   for _, chunk in ipairs(chunks) do
     if chunk[2] ~= nil then
       vim.api.nvim_buf_set_extmark(bufnr, namespace, row, col, { hl_group = chunk[2], end_col = col + #chunk[1] })
     end
+    if chunk.filetype ~= nil then highlight.lines(bufnr, row, col, { chunk[1] }, chunk.filetype) end
     col = col + #chunk[1]
   end
 end
 
+--- @class otto.Section Lines below the header of a tool
+--- @field lines string[]
+--- @field filetype? string Which they highlight as
+--- @field hidden? integer Lines past `max_output_lines`, which don't show
+
+--- @param lines string[]
+--- @param filetype? string
+--- @return otto.Section
+local function output(lines, filetype)
+  return { lines = vim.list_slice(lines, 1, max_output_lines), filetype = filetype, hidden = #lines - max_output_lines }
+end
+
 --- @param header otto.Chunks
---- @param lines string[] below the header
+--- @param sections otto.Section[] below the header
 --- @param indent string
 --- @return string[]
-local function tool_lines(header, lines, indent)
-  return vim.tbl_map(function(line) return indent .. line end, { join(header), unpack(lines) })
+local function tool_lines(header, sections, indent)
+  local lines = { indent .. join(header) }
+  for _, section in ipairs(sections) do
+    for _, line in ipairs(section.lines) do
+      table.insert(lines, indent .. body_indent .. line)
+    end
+    if (section.hidden or 0) > 0 then
+      table.insert(lines, ('%s%s... %d more lines'):format(indent, body_indent, section.hidden))
+    end
+  end
+  return lines
+end
+
+--- Highlights the lines below the header of a tool
+--- @param bufnr integer
+--- @param row integer of the header
+--- @param indent string
+--- @param sections otto.Section[]
+local function highlight_sections(bufnr, row, indent, sections)
+  local col = #indent + #body_indent
+  for _, section in ipairs(sections) do
+    if section.filetype ~= nil then highlight.lines(bufnr, row + 1, col, section.lines, section.filetype) end
+    row = row + #section.lines
+    if (section.hidden or 0) > 0 then
+      row = row + 1
+      vim.api.nvim_buf_set_extmark(
+        bufnr,
+        ns,
+        row,
+        col,
+        { hl_group = 'OttoToolDetail', end_row = row + 1, strict = false }
+      )
+    end
+  end
 end
 
 --- Inserts a tool block with a highlighted header, which folds the lines below it
 --- @param session otto.Session
 --- @param header otto.Chunks
---- @param lines string[] below the header
+--- @param sections otto.Section[] below the header
 --- @param kind? 'tool' | 'note' Notes don't follow the text before them
 --- @return integer row of the header
-local function tool_block(session, header, lines, kind)
-  local row = block(session, kind or 'tool', tool_lines(header, lines, ''))
-  highlight(session.bufnr, ns, row, 0, header)
-  fold(session.bufnr, row + 1, row + 1 + #lines, false)
+local function tool_block(session, header, sections, kind)
+  local lines = tool_lines(header, sections, '')
+  local row = block(session, kind or 'tool', lines)
+  highlight_chunks(session.bufnr, ns, row, 0, header)
+  highlight_sections(session.bufnr, row, '', sections)
+  fold(session.bufnr, row + 1, row + #lines, false)
   return row
 end
 
@@ -268,7 +318,7 @@ local function short(path) return vim.fn.fnamemodify(path, ':~:.') end
 --- @return otto.Chunks
 local function call(name, args)
   if name == 'bash' then
-    local header = { { '$', 'OttoToolName' }, { ' ' .. first_line(args.command), 'OttoToolArg' } }
+    local header = { { '$', 'OttoToolName' }, { ' ' .. first_line(args.command), filetype = 'bash' } }
     local more = #vim.split(vim.trim(args.command), '\n') - 1
     if more > 0 then table.insert(header, { ('  +%d lines'):format(more), 'OttoToolDetail' }) end
     return header
@@ -310,22 +360,11 @@ local function diff_block(session, header, path, diff)
   local first_changed = vim.iter(lines):map(function(line) return tonumber(line:match('^[+-]%s*(%d+)')) end):next()
   table.insert(session.edits, { filename = path, lnum = first_changed or 1, text = join(header) })
 
-  local row = tool_block(session, header, vim.list_extend({ fence }, vim.list_extend(lines, { fence })))
+  local row = tool_block(session, header, { { lines = lines } })
   for i, line in ipairs(lines) do
     local group = diff_highlights[line:sub(1, 1)]
-    if group ~= nil then vim.api.nvim_buf_set_extmark(session.bufnr, ns, row + 1 + i, 0, { line_hl_group = group }) end
+    if group ~= nil then vim.api.nvim_buf_set_extmark(session.bufnr, ns, row + i, 0, { line_hl_group = group }) end
   end
-end
-
---- Other output is fenced, so that it highlights as `lang`
---- @param lines string[]
---- @param lang string
---- @return string[]
-local function fenced(lines, lang)
-  local hidden = #lines - max_output_lines
-  lines = vim.list_slice(lines, 1, max_output_lines)
-  if hidden > 0 then table.insert(lines, ('... %d more lines'):format(hidden)) end
-  return { fence .. lang, unpack(vim.list_extend(lines, { fence })) }
 end
 
 --- @param group otto.Group
@@ -372,9 +411,9 @@ end
 --- @param name string
 --- @param failed boolean
 --- @param header otto.Chunks
---- @param body string[] below the header
+--- @param sections otto.Section[] below the header
 --- @param count integer Of what the summary counts, like the pages that one tool read
-local function grouped_block(session, name, failed, header, body, count)
+local function grouped_block(session, name, failed, header, sections, count)
   local bufnr = session.bufnr
   local group = session.group or group_start(session)
   session.group = nil -- the tool doesn't end its own group
@@ -383,7 +422,7 @@ local function grouped_block(session, name, failed, header, body, count)
   end
   if failed then group.failed = group.failed + 1 end
   local summary = summarize(group)
-  local lines = tool_lines(header, body, nested)
+  local lines = tool_lines(header, sections, nested)
 
   local row
   if group.explained then
@@ -402,11 +441,12 @@ local function grouped_block(session, name, failed, header, body, count)
     local opts = { virt_text = { { '  ' }, unpack(summary) }, virt_text_pos = 'inline' }
     vim.api.nvim_buf_set_extmark(bufnr, summary_ns, group.row, col, opts)
   else
-    highlight(bufnr, summary_ns, group.row, 0, summary)
+    highlight_chunks(bufnr, summary_ns, group.row, 0, summary)
   end
-  highlight(bufnr, ns, row, #nested, header)
+  highlight_chunks(bufnr, ns, row, #nested, header)
+  highlight_sections(bufnr, row, nested, sections)
 
-  if #body > 0 then fold(bufnr, row + 1, row + #lines, true) end
+  if #lines > 1 then fold(bufnr, row + 1, row + #lines, true) end
   if group.fold == nil then
     group.fold = fold(bufnr, group.row + 1, row + #lines, false)
     open(bufnr, group.fold) -- while the agent runs it
@@ -430,35 +470,35 @@ local function tool(session, result)
   local diff = vim.tbl_get(result, 'details', 'diff')
   if diff ~= nil then return diff_block(session, header, args.path, diff) end
 
-  local lang = (name == 'read' or name == 'write') and vim.filetype.match({ filename = args.path })
+  local filetype = (name == 'read' or name == 'write') and vim.filetype.match({ filename = args.path })
     or name == 'web_fetch' and 'markdown'
-    or 'text'
+    or nil
   if name == 'write' and not result.isError then
     local lines = vim.split(args.content, '\n')
     table.insert(header, { ('  +%d'):format(#lines), 'Added' })
-    return tool_block(session, header, fenced(lines, lang))
+    return tool_block(session, header, { output(lines, filetype) })
   end
 
   local text = vim.trim(text_of(result.content))
-  local output = text == '' and {} or vim.split(text, '\n')
+  local lines = text == '' and {} or vim.split(text, '\n')
   local unit = 'lines'
   -- the text of search results has HTML in it, but their details don't
   local results = name == 'web_search' and vim.tbl_get(result, 'details', 'results')
   if results then
-    output = vim.tbl_map(function(item) return item.title .. '  ' .. item.url end, results)
+    lines = vim.tbl_map(function(item) return item.title .. '  ' .. item.url end, results)
     unit = 'results'
   end
   if result.isError then
-    vim.list_extend(header, { { '  failed', 'OttoToolFailed' }, { ' ' .. (output[1] or ''), 'OttoToolDetail' } })
+    vim.list_extend(header, { { '  failed', 'OttoToolFailed' }, { ' ' .. (lines[1] or ''), 'OttoToolDetail' } })
   else
-    vim.list_extend(header, { { '  done', 'OttoToolDone' }, { (' (%d %s)'):format(#output, unit), 'OttoToolDetail' } })
+    vim.list_extend(header, { { '  done', 'OttoToolDone' }, { (' (%d %s)'):format(#lines, unit), 'OttoToolDetail' } })
   end
   local count = name == 'web_fetch' and #args.urls or 1
-  local body = #output > 0 and fenced(output, lang) or {}
+  local sections = #lines > 0 and { output(lines, filetype) } or {}
   -- the header only shows the first line of commands
   local command = name == 'bash' and vim.split(vim.trim(args.command), '\n')
-  if command and #command > 1 then body = vim.list_extend(fenced(command, 'bash'), body) end
-  grouped_block(session, name, result.isError, header, body, count)
+  if command and #command > 1 then table.insert(sections, 1, output(command, 'bash')) end
+  grouped_block(session, name, result.isError, header, sections, count)
 end
 
 --- Folds the transcript in the current window, which has 'foldmethod' set to manual
@@ -506,6 +546,7 @@ end
 function M.clear(bufnr)
   folds[bufnr] = {}
   prompt.clear(bufnr)
+  highlight.clear(bufnr)
   for _, namespace in ipairs({ ns, separator_ns, user_ns, summary_ns }) do
     vim.api.nvim_buf_clear_namespace(bufnr, namespace, 0, -1)
   end
@@ -531,7 +572,7 @@ function M.worked(session, seconds, aborted)
   local time = os.date('%I:%M'):gsub('^0', '') .. (os.date('%p') == 'PM' and ' p.m' or ' a.m')
   local text = ('Worked for %s · %s %s'):format(prompt.duration(seconds), aborted and 'aborted' or 'done', time)
   local chunks = { { text, 'OttoStatusDone' } }
-  highlight(session.bufnr, ns, block(session, 'note', { join(chunks) }), 0, chunks)
+  highlight_chunks(session.bufnr, ns, block(session, 'note', { join(chunks) }), 0, chunks)
 end
 
 --- @param tokens integer
@@ -546,19 +587,23 @@ function M.compacted(session, summary, tokens_before, tokens_after)
   local tokens = tokens_after and ('  %s -> %s tokens'):format(thousands(tokens_before), thousands(tokens_after))
     or tokens_before and ('  from %s tokens'):format(thousands(tokens_before))
   local header = { { 'compacted', 'OttoToolName' }, tokens and { tokens, 'OttoToolDetail' } or nil }
-  if summary == nil then return highlight(session.bufnr, ns, block(session, 'note', { join(header) }), 0, header) end
-  tool_block(session, header, fenced(vim.split(summary, '\n'), 'markdown'), 'note')
+  if summary == nil then
+    return highlight_chunks(session.bufnr, ns, block(session, 'note', { join(header) }), 0, header)
+  end
+  tool_block(session, header, { { lines = vim.split(summary, '\n'), filetype = 'markdown' } }, 'note')
 end
 
 --- Renders a message once it ends, both live and when loading the session
 --- @param session otto.Session
 --- @param msg table AgentMessage
 function M.render(session, msg)
-  if msg.role == 'user' then block(session, 'user', vim.split(vim.trim(text_of(msg.content)), '\n')) end
+  local function markdown(kind, text)
+    local lines = vim.split(vim.trim(text), '\n')
+    highlight.lines(session.bufnr, block(session, kind, lines), 0, lines, 'markdown')
+  end
+  if msg.role == 'user' then markdown('user', text_of(msg.content)) end
   for _, content in ipairs(msg.role == 'assistant' and msg.content or {}) do
-    if content.type == 'text' and vim.trim(content.text) ~= '' then
-      block(session, 'text', vim.split(vim.trim(content.text), '\n'))
-    end
+    if content.type == 'text' and vim.trim(content.text) ~= '' then markdown('text', content.text) end
     if content.type == 'toolCall' then
       session.tools[content.id] = { name = aliases[content.name] or content.name, args = content.arguments }
     end
