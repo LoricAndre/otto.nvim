@@ -65,6 +65,7 @@ end
 
 --- @param event otto.Event
 function Session:on_log(event)
+  if self.closed or not vim.api.nvim_buf_is_loaded(self.bufnr) then return end
   -- by the names they have here, which subagents don't know of the sessions that started them
   if event.type == 'message' then event.from = name_of(event.uri) or event.from end
   if event.type == 'tool_call' and event.tool == 'message' and event.args.to == 'parent' then
@@ -81,22 +82,54 @@ end
 function Session:answer(status)
   util.run(function()
     self.requests:with(function()
+      local function active() return not self.closed and (not status.active or status.active()) end
+      if not active() then return end
       -- cancelled when the picker fails, since the agent waits for an answer
       local ok, value = pcall(function()
-        if status.kind == 'select' then return util.select(status.items, { prompt = status.prompt }) end
-        if status.kind == 'input' then return util.input({ prompt = status.prompt, default = status.default }) end
-        local choice = util.select({ 'Yes', 'No' }, { prompt = status.prompt })
+        if status.kind == 'editor' then
+          return vim.async.await(1, function(done)
+            local cancel
+            cancel = require('otto.ui').editor({
+              title = status.prompt,
+              prefill = status.default,
+              timeout = status.deadline and math.max(0, status.deadline - vim.uv.now()),
+            }, function(value)
+              self.editors[cancel] = nil
+              done(value)
+            end)
+            self.editors[cancel] = true
+          end)
+        end
+        if status.kind == 'input' then
+          return util.input({ prompt = status.prompt .. '\n> ', default = status.default })
+        end
+        local choice = vim.async.await(1, function(done)
+          require('otto.ui.pick').select({
+            prompt = status.prompt,
+            items = function() return status.items or { 'Yes', 'No' } end,
+            format = function(item) return { { tostring(item) } } end,
+            on_accept = done,
+            on_cancel = function() done(nil) end,
+          })
+        end)
+        if status.kind == 'select' then return choice end
         return choice and choice == 'Yes'
       end)
-      if ok then return status.respond(value) end
-      status.respond(nil)
-      error(value, 0)
+      if active() then
+        if ok then
+          status.respond(value)
+        else
+          status.respond(nil)
+        end
+      end
+      if not ok then error(value, 0) end
     end)
   end)
 end
 
 --- @param status otto.Status
 function Session:on_status(status)
+  if self.closed or not vim.api.nvim_buf_is_loaded(self.bufnr) then return end
   local state = self.state
   if status.type == 'working' then
     if state.working == nil and status.state ~= nil then state.since = vim.uv.now() end
@@ -130,6 +163,10 @@ function Session:on_status(status)
     vim.cmd.redrawstatus({ bang = true })
   elseif status.type == 'request' then
     self:answer(status)
+  elseif status.type == 'extension_ui' then
+    require('otto.ui').handle(self.bufnr, status.event)
+  elseif status.type == 'ui_reset' then
+    self:clear_ui()
   end
 end
 
@@ -171,8 +208,17 @@ function Session:submit(text)
   if now and working then self.handle:abort() end
 end
 
+function Session:clear_ui()
+  for cancel in pairs(self.editors) do
+    cancel()
+  end
+  require('otto.ui').clear(self.bufnr)
+end
+
 function Session:close()
+  self.closed = true
   self.handle:close()
+  self:clear_ui()
   self.area:close()
 end
 
@@ -199,7 +245,7 @@ function M.load(bufnr, name)
   vim.treesitter.stop(bufnr)
 
   local session = setmetatable(
-    { bufnr = bufnr, provider = provider, naming = name ~= nil, requests = vim.async.semaphore(1) },
+    { bufnr = bufnr, provider = provider, naming = name ~= nil, requests = vim.async.semaphore(1), editors = {} },
     Session
   )
   session.state = { id = id, queue = {}, commands = {}, background = {} }

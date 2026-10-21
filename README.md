@@ -104,4 +104,66 @@ vim.keymap.set('i', '<C-j>', '<Plug>(otto-submit)', { buffer = true })
 require('otto.config').set({ providers = { claude = { model = 'claude-sonnet-5-5' } } }, { bufnr = 0 })
 ```
 
+## Extension UI
+
+Otto renders the UI data that Pi sends through RPC. No extra UI dependencies are needed.
+
+| Pi extension method | Neovim frontend |
+| --- | --- |
+| `select`, `confirm` | Otto's configured picker (`minibuffer` or `vim.ui.select`) |
+| `input` | `vim.ui.input` |
+| `notify` | `vim.notify` |
+| `editor` | Native scratch-buffer window for multi-line text |
+| `setStatus` | Session winbar entries, ordered by key |
+| `setWidget` with text lines | Virtual lines above or below the prompt |
+| `setTitle` | Session winbar title, not the global terminal title |
+| `setEditorText` | Replace the current prompt without submitting it |
+
+Set `picker = 'vim_ui'` to use your registered `vim.ui.select` frontend for dialogs
+and session pickers. Otto uses your current `vim.ui.input` and `vim.notify` functions.
+It does not replace these global functions.
+
+In the multi-line editor, use **Ctrl-S** to accept. In normal mode, use **q** or
+**Esc** to cancel. Closing the window also cancels. A request timeout, session restart,
+or process exit closes the editor. Other dialog frontends own their windows; Otto
+ignores answers received after the request timeout or process exit.
+
+Status and widget keys update independently within each session. Omit the status text
+or widget lines to remove an entry. Widgets are display-only: they do not change the
+transcript, undo history, or submitted prompt. They redraw as the prompt moves.
+ANSI styling is removed; text uses Neovim highlights. State is cleared on restart,
+process exit, and buffer unload. It is not saved in the transcript.
+
+For a custom statusline, read a copy of a buffer's extension UI state:
+
+```lua
+local state = require('otto.ui').get(bufnr)
+-- state.statuses: key -> text
+-- state.widgets: key -> { lines = { ... }, placement = 'aboveEditor' | 'belowEditor' }
+-- state.title: optional title
+```
+
+Listen for the `User` event `OttoUIChanged`; `event.data.bufnr` identifies the session
+buffer. The getter returns an empty table when no extension UI state exists.
+
+Pi does not send custom terminal components, component-factory widgets, or custom
+footers through RPC. Installing a Neovim UI frontend does not enable those features.
+
+### Manual UI test
+
+The demo extension in `tests/fixtures/ui-demo.ts` exercises the native UI. Use its
+absolute path in a fresh Neovim instance loaded with the local Otto checkout:
+
+```lua
+require('otto').setup({
+  picker = 'vim_ui',
+  providers = { pi = { args = { '--extension', '/path/to/otto/tests/fixtures/ui-demo.ts' } } },
+})
+```
+
+Start a named session with `:Otto pi ui-demo`, then submit `/otto-ui-demo` in its
+prompt. The command displays widgets, status text, a selection, and an editor dialog.
+A named session avoids Otto's automatic naming request. The demo command itself
+does not make a model request. Restart the session to clear the demo title.
+
 Unlike my other projects, this project has been AI assisted, use at your own risk!

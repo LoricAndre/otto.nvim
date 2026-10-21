@@ -172,6 +172,7 @@ function Area:draw()
     local opts = { virt_lines = lines, virt_lines_above = true }
     vim.api.nvim_buf_set_extmark(bufnr, ns, math.max(row - 2, 0), 0, opts)
   end
+  require('otto.ui').draw(bufnr)
   M.follow(bufnr)
 end
 
