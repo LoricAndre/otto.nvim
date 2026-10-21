@@ -76,6 +76,10 @@ function M.pin(bufnr)
 end
 
 --- @param bufnr integer
+--- @return string? like "Working"
+function M.status(bufnr) return areas[bufnr].status end
+
+--- @param bufnr integer
 --- @param status? string like "Working", or nil when the agent stops, which also drops the tools that didn't finish
 function M.set_status(bufnr, status)
   local area = areas[bufnr]

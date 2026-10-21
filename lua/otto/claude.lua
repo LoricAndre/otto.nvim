@@ -381,6 +381,14 @@ function Client:on_output(event)
         end
       end
     end
+  elseif event.type == 'stream_event' and event.parent_tool_use_id == nil then
+    -- like pi's, of the blocks that start and stop as the answer streams
+    local stream = event.event
+    if stream.type == 'content_block_start' and stream.content_block.type == 'thinking' then
+      self.on_event({ type = 'message_update', assistantMessageEvent = { type = 'thinking_start' } })
+    elseif stream.type == 'content_block_stop' then
+      self.on_event({ type = 'message_update', assistantMessageEvent = { type = 'thinking_end' } })
+    end
   elseif event.type == 'result' then
     local usage = (event.modelUsage or {})[self.model] or select(2, next(event.modelUsage or {}))
     if usage then self.window = usage.contextWindow end
@@ -427,6 +435,7 @@ function M.start(id, on_event, args)
     '--input-format=stream-json',
     '--output-format=stream-json',
     '--verbose',
+    '--include-partial-messages', -- which say when it's thinking
     '--replay-user-messages', -- prompts render when Claude Code reads them, like pi's
     '--permission-prompt-tool=stdio',
     '--disallowedTools=AskUserQuestion',

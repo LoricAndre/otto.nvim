@@ -56,6 +56,12 @@ local function on_event(session, event)
     transcript.settled(session)
   elseif event.type == 'tool_execution_start' then
     transcript.tool_started(session, event)
+  elseif event.type == 'message_update' then
+    local update = event.assistantMessageEvent.type
+    if update == 'thinking_start' then prompt.set_status(session.bufnr, 'Thinking') end
+    if update == 'thinking_end' and prompt.status(session.bufnr) == 'Thinking' then
+      prompt.set_status(session.bufnr, 'Working')
+    end
   elseif event.type == 'compaction_start' then
     prompt.set_status(session.bufnr, 'Compacting')
   elseif event.type == 'queue_update' then
