@@ -430,9 +430,10 @@ end
 --- Prompts that steer are with Codex already
 --- @async
 --- @return string[]
-function Handle:take_queue()
-  local follow_ups = self.follow_ups
-  self.follow_ups = {}
+--- @param last? boolean Only the newest
+function Handle:take_queue(last)
+  local follow_ups = last and { table.remove(self.follow_ups) } or self.follow_ups
+  if not last then self.follow_ups = {} end
   self:queue_update()
   return follow_ups
 end

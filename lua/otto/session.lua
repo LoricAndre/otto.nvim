@@ -36,6 +36,7 @@ local util = require('otto.util')
 --- @field naming? boolean Whether a name is on its way, from the user or `name_after`
 --- @field named? boolean Whether the user named the session, which `name_after` doesn't override
 --- @field follow_up? boolean Whether the prompt being submitted waits for the agent to finish, instead of steering
+--- @field now? boolean Whether the prompt being submitted interrupts the agent, which then goes on with it
 --- @field recall? otto.Recall Where the prompt is in the history
 --- @field requests vim.async.Semaphore Answered one at a time, since pickers can't show two at once
 local Session = {}
@@ -150,8 +151,8 @@ end
 
 --- @param text string
 function Session:submit(text)
-  local follow_up = self.follow_up
-  self.follow_up = nil
+  local follow_up, now = self.follow_up, self.now
+  self.follow_up, self.now = nil, nil
   history.add(text, self.provider.name .. '://' .. self.state.id)
   history.reset(self)
   self.buffer:submitted(text)
@@ -162,7 +163,10 @@ function Session:submit(text)
     self.naming = true
     util.run(function() self:name_after(message) end)
   end
+  -- before sending, which makes it work
+  local working = self.state.working ~= nil
   self.handle:prompt(message, follow_up and 'follow_up' or 'steer')
+  if now and working then self.handle:abort() end
 end
 
 function Session:close()
@@ -222,12 +226,25 @@ function M.load(bufnr, name)
   end)
 end
 
+--- Deletes the buffers of the subagents' sessions, which are reached from their parent's
+--- @param parent string Buffer name
+function M.close_children(parent)
+  for bufnr, child in pairs(M.sessions) do
+    if child.state.parent == parent then
+      vim.schedule(function()
+        if vim.api.nvim_buf_is_valid(bufnr) then vim.api.nvim_buf_delete(bufnr, { force = true }) end
+      end)
+    end
+  end
+end
+
 --- Restarts the agent for the session's buffer, and renders the session again
 --- @param bufnr integer
 --- @param id? string Session to switch the buffer to
 function M.restart(bufnr, id)
   local session = M.sessions[bufnr]
   session:close()
+  if id ~= nil then M.close_children(vim.api.nvim_buf_get_name(bufnr)) end
   -- which is closed, even if the agent fails to start again
   M.sessions[bufnr] = nil
   if id ~= nil then vim.api.nvim_buf_set_name(bufnr, session.provider.name .. '://' .. id) end

@@ -19,7 +19,7 @@ local function complete(params)
   local prompt_row = vim.api.nvim_buf_get_mark(session.bufnr, ':')[1] - 1
   -- the agent's own commands, since otto's are in the palette. Like submitting, which trims the prompt
   if vim.startswith(token, '/') and vim.trim(before) == token and row == prompt_row then
-    for _, command in ipairs(session.state.commands) do
+    for _, command in ipairs(require('otto.ui.commands').agent_commands(session)) do
       local item = { label = command.name, kind = kinds.Function, detail = command.args }
       item.documentation = command.description
       table.insert(items, item)

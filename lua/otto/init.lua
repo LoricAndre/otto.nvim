@@ -186,15 +186,7 @@ vim.api.nvim_create_autocmd('BufUnload', {
       sessions[ev.buf]:close()
       sessions[ev.buf] = nil
     end
-    -- and its subagents' sessions, which are reached from it
-    local name = vim.api.nvim_buf_get_name(ev.buf)
-    for bufnr, child in pairs(sessions) do
-      if child.state.parent == name then
-        vim.schedule(function()
-          if vim.api.nvim_buf_is_valid(bufnr) then vim.api.nvim_buf_delete(bufnr, { force = true }) end
-        end)
-      end
-    end
+    session.close_children(vim.api.nvim_buf_get_name(ev.buf))
   end,
 })
 vim.api.nvim_create_autocmd('VimLeavePre', {

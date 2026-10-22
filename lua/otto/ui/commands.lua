@@ -18,6 +18,7 @@ local M = {}
 --- @field run? async fun(session: otto.Session): string? Otto's commands only
 --- @field palette? false Whether the palette skips it, like for moving around
 --- @field available? fun(session: otto.Session): boolean Commands that only some agents support
+--- @field replaces? string[] The agents' commands that it does instead, besides the one of its name
 
 --- Opens the location in the previous window, or this one when there's no other
 --- @param target otto.Target
@@ -31,6 +32,17 @@ function M.open_target(target)
     vim.api.nvim_win_set_cursor(0, { math.max(math.min(target.lnum, vim.api.nvim_buf_line_count(0)), 1), 0 })
     vim.cmd('normal! zz')
   end
+end
+
+--- Puts queued prompts back above what the prompt holds, in the order they were sent
+--- @param session otto.Session
+--- @param texts string[]
+local function take_back(session, texts)
+  if #texts == 0 then return end
+  local input = vim.fn.prompt_getinput(session.bufnr)
+  if input ~= '' then table.insert(texts, input) end
+  local row = vim.api.nvim_buf_get_mark(session.bufnr, ':')[1] - 1
+  vim.api.nvim_buf_set_lines(session.bufnr, row, -1, false, vim.split(table.concat(texts, '\n'), '\n'))
 end
 
 --- @param session otto.Session
@@ -81,6 +93,7 @@ M.builtin = {
   {
     name = 'name',
     description = 'Set the session display name',
+    replaces = { 'rename' },
     run = function(session)
       local name = util.input({ prompt = 'Name: ', default = session.state.name })
       if name == nil or vim.trim(name) == '' then return end
@@ -92,6 +105,20 @@ M.builtin = {
     name = 'new',
     description = 'Start a new session with the same agent',
     run = function(session) require('otto').new(nil, session.provider.name) end,
+  },
+  {
+    name = 'clear',
+    description = 'Start a new session in this buffer, keeping this one saved',
+    run = function(session)
+      local base = session.provider.new_id()
+      -- like a new session of the same second
+      local id, count = base, 1
+      while vim.fn.bufexists(session.provider.name .. '://' .. id) == 1 do
+        count = count + 1
+        id = base .. '_' .. count
+      end
+      require('otto.session').restart(session.bufnr, id)
+    end,
   },
   {
     name = 'resume',
@@ -141,23 +168,27 @@ M.builtin = {
   },
   {
     name = 'abort',
-    description = 'Take back queued prompts, or abort',
+    description = 'Stop the agent, taking back the queued prompts',
     run = function(session)
-      -- the queued prompts go back to the prompt first, since aborting would continue with them
-      local lines = session.handle:take_queue()
-      if #lines == 0 then return session.handle:abort() end
-      local input = vim.fn.prompt_getinput(session.bufnr)
-      if input ~= '' then table.insert(lines, input) end
-      local row = vim.api.nvim_buf_get_mark(session.bufnr, ':')[1] - 1
-      vim.api.nvim_buf_set_lines(session.bufnr, row, -1, false, vim.split(table.concat(lines, '\n'), '\n'))
+      -- first, since the agent would go on with them
+      take_back(session, session.handle:take_queue())
+      session.handle:abort()
     end,
   },
   {
-    name = 'send_queued',
-    description = 'Send queued prompts now',
+    name = 'send_now',
+    description = 'Send the prompt, or the queued prompts, now, interrupting the agent',
     modes = { 'n', 'i' },
+    expr = true,
     run = function(session)
-      if #session.state.queue > 0 then session.handle:abort() end
+      if vim.trim(vim.fn.prompt_getinput(session.bufnr)) == '' then
+        -- since the agent goes on with them once it's interrupted
+        if #session.state.queue > 0 then session.handle:abort() end
+        return ''
+      end
+      -- as a follow-up, since Codex drops prompts that steer a turn when it's interrupted before reading them
+      session.follow_up, session.now = true, true
+      return vim.fn.mode() == 'i' and '<CR>' or 'A<CR><Esc>'
     end,
   },
   {
@@ -270,10 +301,16 @@ M.builtin = {
   },
   {
     name = 'history_older',
-    description = 'Older prompt in history',
+    description = 'Take back the newest queued prompt, or the older prompt in history',
     modes = { 'n', 'i' },
     palette = false,
-    run = function(session) history.step(session, vim.v.count1) end,
+    run = function(session)
+      local count = vim.v.count1
+      -- like when the agent read them meanwhile
+      local texts = #session.state.queue > 0 and session.handle:take_queue(true) or {}
+      if #texts == 0 then return history.step(session, count) end
+      take_back(session, texts)
+    end,
   },
   {
     name = 'history_newer',
@@ -317,6 +354,19 @@ function M.run(session, name)
   util.run(function() command.run(session) end)
 end
 
+--- @param session otto.Session
+--- @return otto.Command[] The agent's own, without those that otto does itself
+function M.agent_commands(session)
+  local replaced = {}
+  for _, command in ipairs(M.available(session)) do
+    replaced[command.name] = true
+    for _, name in ipairs(command.replaces or {}) do
+      replaced[name] = true
+    end
+  end
+  return vim.tbl_filter(function(command) return not replaced[command.name] end, session.state.commands)
+end
+
 local recent = {} --- @type string[] Names of the commands run from the palette, most recent first
 
 --- Picks a command, the most recently run first. Otto's run, and the agent's start in the prompt, to finish writing
@@ -330,15 +380,13 @@ function M.palette(session)
 
   local function items()
     local list = {} --- @type otto.PaletteItem[]
-    local names = {}
     for _, command in ipairs(M.available(session)) do
       if not command.expr and command.palette ~= false then
         table.insert(list, { command = command, builtin = true })
-        names[command.name] = true
       end
     end
-    for _, command in ipairs(session.state.commands) do
-      if not names[command.name] then table.insert(list, { command = command, builtin = false }) end
+    for _, command in ipairs(M.agent_commands(session)) do
+      table.insert(list, { command = command, builtin = false })
     end
     local rank = {}
     for i, name in ipairs(recent) do

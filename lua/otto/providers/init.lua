@@ -19,7 +19,8 @@
 --- @field replay async fun(self: otto.Handle) Adds the session's history to the log
 --- @field prompt fun(self: otto.Handle, text: string, mode: 'steer' | 'follow_up')
 --- @field abort fun(self: otto.Handle)
---- @field take_queue async fun(self: otto.Handle): string[] Prompts that the agent hasn't read yet, which it drops
+--- @field take_queue async fun(self: otto.Handle, last?: boolean): string[] Prompts that the agent hasn't read yet,
+--- or only the newest, which it drops
 --- @field compact async fun(self: otto.Handle, instructions?: string)
 --- @field models async fun(self: otto.Handle): string[]
 --- @field set_model async fun(self: otto.Handle, model: string)
@@ -27,7 +28,8 @@
 --- @field rename async fun(self: otto.Handle, name: string)
 --- @field commands async fun(self: otto.Handle): otto.Command[] The agent's own
 --- @field fork_points? async fun(self: otto.Handle): { id: string, text: string }[] Prompts to fork from
---- @field fork? async fun(self: otto.Handle, id: string): { id: string, text: string }? The new session's id
+--- @field fork? async fun(self: otto.Handle, id: string): { id: string, text: string, switched?: boolean }? The new
+--- session's id, and whether the agent switched to it
 --- @field stop_task? async fun(self: otto.Handle, id: string) Stops a subagent or command in the background
 --- @field read_only? boolean Whether it can't be prompted, like a subagent's session
 --- @field close fun(self: otto.Handle)

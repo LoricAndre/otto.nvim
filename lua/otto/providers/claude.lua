@@ -8,6 +8,9 @@ local util = require('otto.util')
 
 local M = { name = 'claude', icon = '󰛄  ' }
 
+--- @type table<string, { session: string, at?: string }> Forks by id, until they're prompted, which saves them
+local forks = {}
+
 local default_model = 'claude-opus-5-5'
 local default_effort = 'high'
 -- of the default model, until Claude Code reports the window of the one that answers
@@ -108,12 +111,23 @@ local function is_tagged(text) return tags[text:match('^<([%w-]+)[%s>]')] == tru
 --- @field handbacks table<string, string> Reports of subagents by id, which arrive before they end
 --- @field notified table<string, true> Ends of subagents and commands, which the stream and the file may both have
 --- @field child? { parent: { name: string, uri: string }, spawned?: boolean } Of a subagent's session
+--- @field prompts { uuid: string, parent?: string, text: string }[] With the entry before each, which forks resume at
+--- @field last? string Uuid of the last entry, which the stream's entries don't say they follow
 
 --- @param session string
 --- @param child? { parent: { name: string, uri: string } }
 --- @return otto.ClaudeState
 local function new_state(session, child)
-  return { compaction = {}, session = session, calls = {}, agents = {}, handbacks = {}, notified = {}, child = child }
+  return {
+    compaction = {},
+    session = session,
+    calls = {},
+    agents = {},
+    handbacks = {},
+    notified = {},
+    child = child,
+    prompts = {},
+  }
 end
 
 --- @param text string
@@ -270,6 +284,8 @@ local function add(session_log, state, entry)
   if entry.type == 'user' and origin.kind == 'peer' then return peer(session_log, state, origin, at) end
   -- subagents' files are all of their side
   if (entry.isSidechain and not state.child) or entry.isMeta or entry.parent_tool_use_id ~= nil then return end
+  local parent = entry.parentUuid or state.last
+  state.last = entry.uuid or state.last
   -- prompts that the agent read while it worked, which the stream echoes like the others
   local attachment = entry.attachment or {}
   if attachment.type == 'queued_command' and vim.startswith(attachment.prompt or '', '<task-notification>') then
@@ -277,6 +293,7 @@ local function add(session_log, state, entry)
   end
   if attachment.type == 'queued_command' and attachment.commandMode == 'prompt' then
     if type(attachment.prompt) == 'string' and not is_tagged(attachment.prompt) then
+      table.insert(state.prompts, { uuid = entry.uuid, parent = parent, text = vim.trim(attachment.prompt) })
       session_log:user(vim.trim(attachment.prompt), at)
     end
     return
@@ -332,7 +349,10 @@ local function add(session_log, state, entry)
   -- like /compact from Claude Code's own UI, which renders as the compaction
   if is_tagged(text) or text == '/compact' or vim.startswith(text, '/compact ') then return end
   local child = state.child
-  if child == nil then return session_log:user(vim.trim(text), at) end
+  if child == nil then
+    table.insert(state.prompts, { uuid = entry.uuid, parent = parent, text = vim.trim(text) })
+    return session_log:user(vim.trim(text), at)
+  end
   -- a subagent's prompts come from the session that started it, the first starting it
   session_log:message(
     { from = child.parent.name, uri = child.parent.uri, kind = not child.spawned and 'spawn' or nil, text = text },
@@ -356,6 +376,7 @@ end
 --- @field working boolean
 --- @field thinking boolean
 --- @field queue { text: string, uuid: string }[] Prompts that Claude Code hasn't read yet, which it doesn't report
+--- @field taken table<string, true> Prompts that rendered when Claude Code took them, until it echoes them
 --- @field tasks table<string, otto.Background | { background: boolean }> Subagents and commands that run, by task
 --- @field notifications table[] Ends of subagents and commands that Claude Code hasn't read yet
 local Handle = {}
@@ -477,6 +498,19 @@ function Handle:read(text)
   if not self.working then self:set_working(true) end
 end
 
+--- Claude Code takes a prompt when it starts a turn with it, but only echoes it with the answer's first block, so it
+--- renders when it's taken
+--- @param uuid string
+function Handle:take(uuid)
+  local index = vim.iter(ipairs(self.queue)):find(function(_, queued) return queued.uuid == uuid end)
+  if index == nil then return end
+  local text = table.remove(self.queue, index).text
+  self:queue_update()
+  self.taken[uuid] = true
+  table.insert(self.state.prompts, { uuid = uuid, parent = self.state.last, text = vim.trim(text) })
+  self.log:user(vim.trim(text))
+end
+
 --- Claude Code asks before using tools, unless it's been allowed to
 --- @param msg table control_request
 function Handle:permission(msg)
@@ -537,6 +571,11 @@ function Handle:on_message(msg)
     end
     if msg.subtype == 'session_title_changed' then self.log:info({ name = msg.title }) end
     if msg.subtype == 'background_tasks_changed' or vim.startswith(msg.subtype or '', 'task_') then self:task(msg) end
+  elseif msg.type == 'command_lifecycle' then
+    -- unlike prompts that steer the turn, which render when it reads them
+    if msg.state == 'started' and not self.log.turn then self:take(msg.command_uuid) end
+  elseif msg.type == 'user' and self.taken[msg.uuid] then
+    self.taken[msg.uuid] = nil
   elseif msg.type == 'assistant' or msg.type == 'user' then
     if msg.type == 'user' and type(msg.message.content) == 'string' then self:read(msg.message.content) end
     add(self.log, self.state, msg)
@@ -566,13 +605,19 @@ end
 --- @async
 function Handle:replay()
   local file = self.file
+  -- a fork, which Claude Code only saves once it's prompted, shows the session it forked up to where it did
+  local fork = forks[self.id]
+  if vim.uv.fs_stat(file) == nil and fork and fork.at then file = session_file(fork.session) end
   if vim.uv.fs_stat(file) == nil then return end
   for line in io.lines(file) do
+    local entry
     -- like the stream, one bad line, like the last while it's written, doesn't lose the lines after it
-    local ok, err = pcall(
-      function() add(self.log, self.state, vim.json.decode(line, { luanil = { object = true, array = true } })) end
-    )
+    local ok, err = pcall(function()
+      entry = vim.json.decode(line, { luanil = { object = true, array = true } })
+      add(self.log, self.state, entry)
+    end)
     if not ok then util.notify('claude: ' .. tostring(err)) end
+    if file ~= self.file and entry and entry.uuid == fork.at then break end
   end
   self.log:finish()
 end
@@ -592,13 +637,17 @@ function Handle:abort() self:control({ subtype = 'interrupt' }) end
 
 --- @async
 --- @return string[]
-function Handle:take_queue()
+--- @param last? boolean Only the newest
+function Handle:take_queue(last)
   local texts = {}
-  for _, queued in ipairs(vim.list_extend({}, self.queue)) do
+  -- newest first, while it's waited on
+  for i = #self.queue, 1, -1 do
+    local queued = self.queue[i]
     -- unless Claude Code read it already, which then answers it
-    if self:call({ subtype = 'cancel_async_message', message_uuid = queued.uuid }).cancelled then
-      table.insert(texts, queued.text)
+    if queued and self:call({ subtype = 'cancel_async_message', message_uuid = queued.uuid }).cancelled then
+      table.insert(texts, 1, queued.text)
       self.queue = vim.tbl_filter(function(other) return other ~= queued end, self.queue)
+      if last then break end
     end
   end
   self:queue_update()
@@ -651,6 +700,26 @@ function Handle:commands()
     function(command) return { name = command.name, description = command.description, args = command.argumentHint } end,
     self:initialized().commands
   )
+end
+
+--- @async
+--- @return { id: string, text: string }[] prompts to fork from
+function Handle:fork_points()
+  return vim.tbl_map(function(prompt) return { id = prompt.uuid, text = prompt.text } end, self.state.prompts)
+end
+
+--- A new session from before the prompt, which starts once it's opened, see `M.open`
+--- @async
+--- @param id string Uuid of the prompt
+--- @return { id: string, text: string }? the new session, and the prompt to edit
+function Handle:fork(id)
+  local prompt = vim.iter(self.state.prompts):find(function(prompt) return prompt.uuid == id end)
+  if prompt == nil then return end
+  -- of a fork that wasn't prompted yet, the session that it forked
+  local session = vim.uv.fs_stat(self.file) and self.id or (forks[self.id] or {}).session or self.id
+  local fork = util.uuid()
+  forks[fork] = { session = session, at = prompt.parent }
+  return { id = fork, text = prompt.text }
 end
 
 --- @async
@@ -774,11 +843,13 @@ function M.open(id, opts)
     working = false,
     thinking = false,
     queue = {},
+    taken = {},
     tasks = {},
     notifications = {},
   }, Handle)
 
   local exists = vim.uv.fs_stat(handle.file) ~= nil
+  local fork = not exists and forks[id] or {}
   local cmd = {
     'claude',
     '-p',
@@ -795,6 +866,10 @@ function M.open(id, opts)
     exists and '--resume' or '--session-id',
     id,
   }
+  -- which keeps the history up to and including the entry
+  if fork.at then
+    vim.list_extend(cmd, { '--resume', fork.session, '--resume-session-at', fork.at, '--fork-session' })
+  end
   if opts.name ~= nil then vim.list_extend(cmd, { '--name', opts.name }) end
   handle.proc = proc.start(cmd, {
     name = 'claude',

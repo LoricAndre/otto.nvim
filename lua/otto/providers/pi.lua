@@ -252,10 +252,20 @@ end
 function Handle:abort() self:request({ type = 'abort' }) end
 
 --- @async
+--- @param last? boolean Only the newest
 --- @return string[]
-function Handle:take_queue()
+function Handle:take_queue(last)
   local queued = self:call({ type = 'clear_queue' })
-  return vim.list_extend(vim.list_extend({}, queued.steering), queued.followUp)
+  if not last then return vim.list_extend(vim.list_extend({}, queued.steering), queued.followUp) end
+  -- pi only clears them all, so the others go back
+  local newest = table.remove(#queued.followUp > 0 and queued.followUp or queued.steering)
+  for _, text in ipairs(queued.steering) do
+    self:prompt(text, 'steer')
+  end
+  for _, text in ipairs(queued.followUp) do
+    self:prompt(text, 'follow_up')
+  end
+  return { newest }
 end
 
 --- @async
@@ -311,7 +321,7 @@ end
 function Handle:fork(id)
   local fork = self:call({ type = 'fork', entryId = id })
   if fork.cancelled then return end
-  return { id = self:call({ type = 'get_state' }).sessionId, text = fork.text }
+  return { id = self:call({ type = 'get_state' }).sessionId, text = fork.text, switched = true }
 end
 
 function Handle:close() self.proc:close() end

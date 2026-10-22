@@ -66,8 +66,8 @@ function M.fork(session, prompt)
   local fork = session.handle:fork(prompt.id)
   if fork == nil then return end
   local sessions = require('otto.session')
-  -- since the agent switched to the fork
-  sessions.restart(session.bufnr)
+  -- like pi, whose process switches to the fork
+  if fork.switched then sessions.restart(session.bufnr) end
   vim.cmd.edit(session.provider.name .. '://' .. fork.id)
   history.insert(sessions.sessions[vim.api.nvim_get_current_buf()], { text = fork.text })
 end
