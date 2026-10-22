@@ -534,7 +534,7 @@ function M.open(id, opts)
     unread = {},
     follow_ups = {},
   }, Handle)
-  handle.proc = proc.start({ 'codex', 'app-server' }, {
+  handle.proc = proc.start_provider(opts.config, { 'app-server' }, {
     name = 'codex',
     on_message = function(msg) handle:on_message(msg) end,
     on_exit = function()

@@ -63,6 +63,16 @@ function M.start(cmd, opts)
   return proc
 end
 
+--- Starts a provider's agent, with otto's arguments between the configured command and arguments
+--- @param config otto.ProviderConfig
+--- @param args string[] Otto's
+--- @param opts otto.ProcOpts Its `env` goes under the configured one
+--- @return otto.Proc
+function M.start_provider(config, args, opts)
+  local cmd = vim.list_extend(vim.list_extend(vim.deepcopy(config.cmd), args), config.args)
+  return M.start(cmd, vim.tbl_extend('force', opts, { env = vim.tbl_extend('force', opts.env or {}, config.env) }))
+end
+
 --- @param msg table
 function Proc:send(msg)
   if self.system:is_closing() then return util.notify(self.name .. ' is not running') end

@@ -12,6 +12,7 @@
 
 --- @class otto.OpenOpts
 --- @field name? string Display name of a new session
+--- @field config otto.ProviderConfig Of the session's buffer
 --- @field on_log fun(event: otto.Event)
 --- @field on_status fun(status: otto.Status)
 
@@ -35,6 +36,8 @@
 --- @field close fun(self: otto.Handle)
 
 --- @class otto.AskOpts
+--- @field bufnr? integer Of the config to use, the current buffer by default
+--- @field config? otto.ProviderConfig Set by `ask`
 --- @field thinking? string Level, like "low"
 --- @field tools? false | string[] None, or only these
 --- @field skills? false
@@ -98,8 +101,11 @@ end
 --- @param opts? otto.AskOpts
 --- @return string
 function M.ask(message, opts)
-  local provider = M.providers[vim.g.otto_ask_provider or 'pi']
-  return assert(provider.ask, provider.name .. " can't answer one-shot prompts")(message, opts or {})
+  opts = opts or {}
+  local config = require('otto.config').get({ bufnr = opts.bufnr })
+  local provider = M.providers[config.ask.provider]
+  opts = vim.tbl_extend('force', opts, { config = config.providers[provider.name] })
+  return assert(provider.ask, provider.name .. " can't answer one-shot prompts")(message, opts)
 end
 
 return M

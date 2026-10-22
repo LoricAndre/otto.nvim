@@ -44,7 +44,7 @@ end
 local function prompt(doing, target, message, opts)
   local virt_text = { { doing .. '...', 'Comment' } }
   local mark = vim.api.nvim_buf_set_extmark(target.bufnr, ns, target.start_row - 1, 0, { virt_text = virt_text })
-  local ok, answer = pcall(providers.ask, message, opts)
+  local ok, answer = pcall(providers.ask, message, vim.tbl_extend('force', opts or {}, { bufnr = target.bufnr }))
   vim.api.nvim_buf_del_extmark(target.bufnr, ns, mark)
   if not ok then error(answer, 0) end
   return answer

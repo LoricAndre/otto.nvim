@@ -2,8 +2,10 @@
 
 require('otto.highlights')
 local commands = require('otto.ui.commands')
+local config = require('otto.config')
 local highlight = require('otto.highlight')
 local history = require('otto.ui.history')
+local keymaps = require('otto.ui.keymaps')
 local pick = require('otto.ui.pick')
 local prompt_area = require('otto.ui.prompt_area')
 local providers = require('otto.providers')
@@ -12,6 +14,10 @@ local util = require('otto.util')
 local winbar = require('otto.ui.winbar')
 
 local M = {}
+
+--- Merges into the configuration, see `config.lua`
+--- @param opts? otto.Config
+function M.setup(opts) config.set(opts or {}) end
 
 local sessions = session.sessions
 local names = {} --- @type table<string, string> of new sessions by buffer name, until they start
@@ -22,9 +28,9 @@ vim.treesitter.language.register('markdown', 'otto')
 
 --- Opens a new session, which is named after its first prompt unless it's given a name
 --- @param name? string
---- @param provider? string Defaults to pi
+--- @param provider? string Defaults to `default_provider`
 function M.new(name, provider)
-  provider = provider or 'pi'
+  provider = provider or config.default_provider
   local id = providers.get(provider).new_id(name)
   -- like a session of the same name, or of the same second, that isn't saved yet
   local uri, count = ('%s://%s'):format(provider, id), 1
@@ -88,7 +94,6 @@ end
 
 -- agents only save sessions with messages, so an empty session only has its buffer to remove, once it's been hidden
 -- for a while
-local cleanup_delay = 10000
 local shown = {} --- @type table<integer, integer> times each session buffer was shown in a window
 --- @param bufnr integer
 --- @return boolean
@@ -100,6 +105,8 @@ local function is_empty(bufnr)
   if state.working ~= nil or #state.queue > 0 then return false end
   return vim.api.nvim_buf_get_mark(bufnr, ':')[1] == 1 and vim.fn.prompt_getinput(bufnr) == ''
 end
+
+keymaps.plug()
 
 local group = vim.api.nvim_create_augroup('otto', {})
 local patterns = vim.tbl_map(function(name) return name .. '://*' end, vim.tbl_keys(providers.providers))
@@ -174,7 +181,7 @@ vim.api.nvim_create_autocmd('BufHidden', {
     vim.defer_fn(function()
       local hidden = vim.api.nvim_buf_is_loaded(ev.buf) and shown[ev.buf] == times
       if hidden and is_empty(ev.buf) then vim.api.nvim_buf_delete(ev.buf, { force = true }) end
-    end, cleanup_delay)
+    end, config.get({ bufnr = ev.buf }).cleanup_delay)
   end,
 })
 vim.api.nvim_create_autocmd('BufUnload', {

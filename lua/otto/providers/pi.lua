@@ -328,10 +328,11 @@ function Handle:close() self.proc:close() end
 
 --- @param id string
 --- @param args string[] for pi
+--- @param config otto.ProviderConfig
 --- @param on_log fun(event: otto.Event)
 --- @param on_status fun(status: otto.Status)
 --- @return otto.PiHandle
-local function start(id, args, on_log, on_status)
+local function start(id, args, config, on_log, on_status)
   --- @type otto.PiHandle
   local handle = setmetatable({
     id = id,
@@ -340,7 +341,7 @@ local function start(id, args, on_log, on_status)
     on_status = on_status,
     working = false,
   }, Handle)
-  handle.proc = proc.start(vim.list_extend({ 'pi', '--mode', 'rpc' }, args), {
+  handle.proc = proc.start_provider(config, vim.list_extend({ '--mode', 'rpc' }, args), {
     name = 'pi',
     on_message = function(msg) handle:on_message(msg) end,
     on_exit = function()
@@ -359,7 +360,7 @@ end
 function M.open(id, opts)
   local args = { '--session-id', id }
   if opts.name ~= nil then vim.list_extend(args, { '--name', opts.name }) end
-  local handle = start(id, args, opts.on_log, opts.on_status)
+  local handle = start(id, args, opts.config, opts.on_log, opts.on_status)
   util.run(function()
     local state = handle:call({ type = 'get_state' })
     local model = state.model or {}
@@ -393,7 +394,7 @@ function M.ask(message, opts)
   local function on_status(status)
     if status.type == 'request' then status.respond(nil) end
   end
-  local handle = start('ask', args, on_log, on_status)
+  local handle = start('ask', args, opts.config, on_log, on_status)
   local ok, answer = pcall(function()
     local err = vim.async.await(1, function(done)
       handle.on_settled = done

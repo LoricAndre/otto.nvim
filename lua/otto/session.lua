@@ -2,6 +2,7 @@
 -- agent and session, like claude://<id>
 
 local buffer = require('otto.render.buffer')
+local config = require('otto.config')
 local history = require('otto.ui.history')
 local keymaps = require('otto.ui.keymaps')
 local layout = require('otto.render.layout')
@@ -140,7 +141,8 @@ function Session:name_after(text)
     .. 'Reply with only the name.\n\n'
     .. text
   -- quietly, since it's only a nicety, and the agent that answers may not be installed
-  local ok, name = pcall(providers.ask, message, { tools = false, skills = false, thinking = 'off' })
+  local opts = { bufnr = self.bufnr, tools = false, skills = false, thinking = 'off' }
+  local ok, name = pcall(providers.ask, message, opts)
   if not ok then return end
   name = vim.trim(name):lower():gsub('[^%w]+', '_'):gsub('^_+', ''):gsub('_+$', '')
   -- unless the user named it while it was asked, or the session restarted
@@ -209,6 +211,7 @@ function M.load(bufnr, name)
   history.restore_draft(bufnr)
   session.handle = provider.open(id, {
     name = name,
+    config = config.get({ bufnr = bufnr }).providers[provider.name],
     on_log = function(event) session:on_log(event) end,
     on_status = function(status) session:on_status(status) end,
   })

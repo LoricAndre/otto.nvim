@@ -11,8 +11,6 @@ local M = { name = 'claude', icon = '󰛄  ' }
 --- @type table<string, { session: string, at?: string }> Forks by id, until they're prompted, which saves them
 local forks = {}
 
-local default_model = 'claude-opus-5-5'
-local default_effort = 'high'
 -- of the default model, until Claude Code reports the window of the one that answers
 local default_window = 1000000
 
@@ -838,8 +836,8 @@ function M.open(id, opts)
     state = new_state(id),
     on_status = opts.on_status,
     waiting = {},
-    model = default_model,
-    effort = default_effort,
+    model = opts.config.model,
+    effort = opts.config.effort,
     working = false,
     thinking = false,
     queue = {},
@@ -850,8 +848,7 @@ function M.open(id, opts)
 
   local exists = vim.uv.fs_stat(handle.file) ~= nil
   local fork = not exists and forks[id] or {}
-  local cmd = {
-    'claude',
+  local args = {
     '-p',
     '--input-format=stream-json',
     '--output-format=stream-json',
@@ -860,18 +857,18 @@ function M.open(id, opts)
     '--replay-user-messages', -- prompts render when Claude Code reads them
     '--permission-prompt-tool=stdio',
     '--disallowedTools=AskUserQuestion',
-    '--permission-mode=auto', -- asks only for what its classifier doesn't allow
-    '--model=' .. default_model,
-    '--effort=' .. default_effort,
+    '--permission-mode=' .. opts.config.permission_mode,
+    '--model=' .. opts.config.model,
+    '--effort=' .. opts.config.effort,
     exists and '--resume' or '--session-id',
     id,
   }
   -- which keeps the history up to and including the entry
   if fork.at then
-    vim.list_extend(cmd, { '--resume', fork.session, '--resume-session-at', fork.at, '--fork-session' })
+    vim.list_extend(args, { '--resume', fork.session, '--resume-session-at', fork.at, '--fork-session' })
   end
-  if opts.name ~= nil then vim.list_extend(cmd, { '--name', opts.name }) end
-  handle.proc = proc.start(cmd, {
+  if opts.name ~= nil then vim.list_extend(args, { '--name', opts.name }) end
+  handle.proc = proc.start_provider(opts.config, args, {
     name = 'claude',
     on_message = function(msg) handle:on_message(msg) end,
     on_exit = function()
@@ -892,7 +889,7 @@ function M.open(id, opts)
     end
     handle.waiting = {}
   end)
-  opts.on_status({ type = 'info', model = default_model, effort = default_effort, window = default_window })
+  opts.on_status({ type = 'info', model = opts.config.model, effort = opts.config.effort, window = default_window })
   return handle
 end
 

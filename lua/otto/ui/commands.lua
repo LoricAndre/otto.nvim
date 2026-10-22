@@ -372,7 +372,7 @@ local recent = {} --- @type string[] Names of the commands run from the palette,
 --- Picks a command, the most recently run first. Otto's run, and the agent's start in the prompt, to finish writing
 --- @param session otto.Session
 function M.palette(session)
-  local keys = require('otto.ui.keymaps').keys()
+  local keys = require('otto.ui.keymaps').keys(session.bufnr)
 
   --- @class otto.PaletteItem
   --- @field command otto.Command

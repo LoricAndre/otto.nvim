@@ -41,4 +41,43 @@ Pickers use [minibuffer.nvim](https://github.com/saghen/minibuffer.nvim) when it
 | `\k` | Stop the subagent or command under the cursor |
 | `\q` | Edits of the session to quickfix |
 
+## Configuration
+
+Otto works without `setup()`. These are the defaults, which `setup()` merges into. See `lua/otto/config.lua` for every keymap.
+
+```lua
+require('otto').setup({
+  default_provider = 'pi',
+  ask = { provider = 'pi' }, -- one-shot prompts, like naming sessions
+  cleanup_delay = 10000, -- ms before an empty, hidden session's buffer is deleted
+  -- command, command by mode, or false to disable. `keymaps = false` disables them all
+  keymaps = {
+    ['<CR>'] = { n = 'open', i = 'newline' },
+    ['<C-s>'] = 'submit',
+    -- ...
+  },
+  providers = {
+    -- `cmd` comes before otto's arguments and `args` after, so `cmd` can be a wrapper like { 'bwrap', ..., 'pi' }
+    pi = { cmd = { 'pi' }, args = {}, env = {} },
+    claude = {
+      cmd = { 'claude' },
+      args = {},
+      env = {},
+      model = 'claude-opus-5-5',
+      effort = 'high',
+      permission_mode = 'auto',
+    },
+    codex = { cmd = { 'codex' }, args = {}, env = {} },
+  },
+})
+```
+
+Every command has a `<Plug>(otto-<command>)` mapping, which you can map yourself in `after/ftplugin/otto.lua`. Otto doesn't map over the buffer's own mappings:
+
+```lua
+vim.keymap.set('i', '<C-j>', '<Plug>(otto-submit)', { buffer = true })
+-- or configure only this session, before its agent starts
+require('otto.config').set({ providers = { claude = { model = 'claude-sonnet-5-5' } } }, { bufnr = 0 })
+```
+
 Unlike my other projects, this project has been AI assisted, use at your own risk!
