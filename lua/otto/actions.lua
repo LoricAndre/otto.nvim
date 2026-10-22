@@ -1,20 +1,21 @@
--- One-shot prompts about code, offered as code actions by otto.lsp. Each is answered by a new pi without a saved
--- session. While pi works, the target line says what it's doing
+-- One-shot prompts about code, offered as code actions by otto.ui.lsp. Each is answered by a new agent without a saved
+-- session. While it works, the target line says what it's doing
 
-local rpc = require('otto.rpc')
+local providers = require('otto.providers')
+local util = require('otto.util')
 
 local M = {}
 
 local ns = vim.api.nvim_create_namespace('otto.actions')
-local quick = { '--thinking', 'low' }
+local quick = { thinking = 'low' }
 
---- @class otto.Target
+--- @class otto.ActionTarget
 --- @field bufnr integer
 --- @field path string
 --- @field start_row integer 1-indexed
 --- @field end_row integer 1-indexed, inclusive
 
---- @param target otto.Target
+--- @param target otto.ActionTarget
 --- @return string
 local function describe(target)
   local lines = vim.api.nvim_buf_get_lines(target.bufnr, target.start_row - 1, target.end_row, false)
@@ -26,25 +27,24 @@ end
 --- Runs a command, resuming on the main loop
 --- @async
 --- @param cmd string[]
---- @param cwd? string
 --- @return string stdout
-local function system(cmd, cwd)
-  local opts = { cwd = cwd, text = true }
+local function system(cmd)
+  local opts = { text = true }
   local out = vim.async.await(1, function(callback) vim.system(cmd, opts, vim.schedule_wrap(callback)) end)
   return out.stdout
 end
 
---- Sends `message` to a new pi and returns its final answer
+--- Sends `message` to a new agent and returns its final answer
 --- @async
---- @param doing string What pi is doing, like "explaining"
---- @param target otto.Target
+--- @param doing string What the agent is doing, like "explaining"
+--- @param target otto.ActionTarget
 --- @param message string
---- @param args? string[] for pi
+--- @param opts? otto.AskOpts
 --- @return string
-local function prompt(doing, target, message, args)
+local function prompt(doing, target, message, opts)
   local virt_text = { { doing .. '...', 'Comment' } }
   local mark = vim.api.nvim_buf_set_extmark(target.bufnr, ns, target.start_row - 1, 0, { virt_text = virt_text })
-  local ok, answer = pcall(rpc.ask, doing, message, args)
+  local ok, answer = pcall(providers.ask, message, opts)
   vim.api.nvim_buf_del_extmark(target.bufnr, ns, mark)
   if not ok then error(answer, 0) end
   return answer
@@ -54,7 +54,7 @@ end
 --- @field name string
 --- @field title string
 --- @field available? fun(bufnr: integer): boolean
---- @field run async fun(target: otto.Target)
+--- @field run async fun(target: otto.ActionTarget)
 
 --- @type otto.Action[]
 M.actions = {
@@ -62,7 +62,7 @@ M.actions = {
     name = 'ask',
     title = 'Ask',
     run = function(target)
-      local question = rpc.input({ prompt = 'Ask: ', default = 'Briefly explain this code' })
+      local question = util.input({ prompt = 'Ask: ', default = 'Briefly explain this code' })
       if question == nil then return end
       local answer = prompt('answering', target, question .. '\n\n' .. describe(target), quick)
       local opts = { focus_id = 'otto', max_width = 100 }
@@ -81,10 +81,10 @@ M.actions = {
       end
       local task = #problems > 0 and 'Fix these problems:\n' .. table.concat(problems, '\n') or 'Fix this code'
 
-      -- pi edits the file on disk
+      -- the agent edits the file on disk
       vim.api.nvim_buf_call(target.bufnr, function() vim.cmd('silent update') end)
       prompt('fixing', target, task .. '\n\n' .. describe(target))
-      vim.cmd.checktime() -- pi may have edited other files too
+      vim.cmd.checktime() -- the agent may have edited other files too
     end,
   },
   {
@@ -97,14 +97,14 @@ M.actions = {
     title = 'Write commit message',
     available = function(bufnr) return vim.bo[bufnr].filetype == 'gitcommit' end,
     run = function(target)
-      -- the buffer is .git/COMMIT_EDITMSG
-      local root = vim.fs.root(target.bufnr, '.git')
+      -- the buffer is in the repository's folder, like .git/COMMIT_EDITMSG, or .git/worktrees/<name>/COMMIT_EDITMSG
+      local git_dir = '--git-dir=' .. vim.fs.dirname(vim.api.nvim_buf_get_name(target.bufnr))
       local message = ('Write a commit message for this diff, in the style of these recent commits:\n%s\n\n%s'):format(
-        system({ 'git', 'log', '--format=%s', '-20' }, root),
-        system({ 'git', 'diff', '--cached' }, root)
+        system({ 'git', git_dir, 'log', '--format=%s', '-20' }),
+        system({ 'git', git_dir, 'diff', '--cached' })
       )
       message = message .. '\n\nReply with only the commit message'
-      local commit = prompt('writing', target, message, { '--tools', 'read,grep', unpack(quick) })
+      local commit = prompt('writing', target, message, { tools = { 'read', 'grep' }, thinking = quick.thinking })
       vim.api.nvim_buf_set_lines(target.bufnr, 0, 0, false, vim.split(vim.trim(commit), '\n'))
     end,
   },
@@ -135,7 +135,7 @@ vim.lsp.commands['otto'] = function(command, ctx)
   local end_row = range['end'].character == 0 and range['end'].line or range['end'].line + 1
   local path = vim.fn.fnamemodify(vim.api.nvim_buf_get_name(ctx.bufnr), ':.')
   local target = { bufnr = ctx.bufnr, path = path, start_row = start_row, end_row = math.max(start_row, end_row) }
-  rpc.run(function() action.run(target) end)
+  util.run(function() action.run(target) end)
 end
 
 return M

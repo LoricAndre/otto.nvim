@@ -73,7 +73,7 @@ end
 --- @param bufnr integer
 --- @param row integer 0-indexed, of the first line
 --- @param count integer of lines
---- @param fn fun(row: integer) Highlights the block, which starts at the row, as the transcript trims above it
+--- @param fn fun(row: integer) Highlights the block, which starts at the row
 local function lazily(bufnr, row, count, fn)
   if count == 0 then return end
   -- up to the next line, without the lines that go after it
@@ -99,14 +99,6 @@ vim.api.nvim_set_decoration_provider(pending_ns, {
     end
   end,
 })
-
---- Drops the highlighting of the blocks that the transcript removed, with their extmarks
---- @param bufnr integer
-function M.forget(bufnr)
-  for id in pairs(pending[bufnr] or {}) do
-    if #vim.api.nvim_buf_get_extmark_by_id(bufnr, pending_ns, id, {}) == 0 then pending[bufnr][id] = nil end
-  end
-end
 
 --- Removes the highlights of the transcript
 --- @param bufnr integer
@@ -134,11 +126,24 @@ end
 --- @param lines string[]
 --- @param lang string
 local function diff(bufnr, row, indent, lines, lang)
-  local before = { lines = {}, places = {} }
-  local after = { lines = {}, places = {} }
+  local before, after
+  -- hunks parse apart, since a string that one leaves open would continue into the next
+  local function hunk()
+    if before ~= nil then
+      highlight(bufnr, ns, before.places, before.lines, lang)
+      highlight(bufnr, ns, after.places, after.lines, lang)
+    end
+    before, after = { lines = {}, places = {} }, { lines = {}, places = {} }
+  end
+  hunk()
+  local next_lnum -- in the new file, which jumps between hunks
   for i, line in ipairs(lines) do
     local sign = line:sub(1, 1)
     local number, code = line:match('^.(%s*%d+ )(.*)$')
+    local lnum = tonumber(number)
+    -- or at the gaps between them, like pi's
+    if lnum == nil or (sign ~= '-' and next_lnum ~= nil and lnum ~= next_lnum) then hunk() end
+    if sign ~= '-' then next_lnum = lnum and lnum + 1 end
     if number ~= nil then
       local col = indent + 1 + #number
       local opts = { end_col = col - 1, hl_group = 'OttoLineNumber' }
@@ -154,8 +159,7 @@ local function diff(bufnr, row, indent, lines, lang)
       end
     end
   end
-  highlight(bufnr, ns, before.places, before.lines, lang)
-  highlight(bufnr, ns, after.places, after.lines, lang)
+  hunk()
 end
 
 --- Highlights a diff like pi's, with a line number after the sign of each line, as the language of its file, like
@@ -169,27 +173,6 @@ function M.diff(bufnr, row, indent, lines, filetype)
   local lang = vim.treesitter.language.get_lang(filetype)
   if lang == nil then return end
   lazily(bufnr, row, #lines, function(first) diff(bufnr, first, indent, lines, lang) end)
-end
-
---- Highlights the locations at the start of lines, like `path:12:` from grep
---- @param bufnr integer
---- @param row integer 0-indexed, of the first line
---- @param indent integer Columns before the lines in the buffer
---- @param lines string[]
---- @return { index: integer, path: string, lnum: integer }[] of the lines with locations
-function M.locations(bufnr, row, indent, lines)
-  local locations = {}
-  for i, line in ipairs(lines) do
-    local path, number = line:match('^([^:%s][^:]*)[:-](%d+)[:-]')
-    if path ~= nil then
-      table.insert(locations, { index = i, path = path, lnum = tonumber(number) })
-      local col = indent + #path + 1
-      vim.api.nvim_buf_set_extmark(bufnr, ns, row + i - 1, indent, { end_col = col - 1, hl_group = 'OttoPath' })
-      local opts = { end_col = col + #number, hl_group = 'OttoLineNumber' }
-      vim.api.nvim_buf_set_extmark(bufnr, ns, row + i - 1, col, opts)
-    end
-  end
-  return locations
 end
 
 --- Highlights the prompt as markdown again, after it changed

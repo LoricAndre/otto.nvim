@@ -1,260 +1,37 @@
--- Experimental neovim-native agent interface
+-- Experimental neovim-native agent interface, see ARCHITECTURE.md
 
---- @class otto.Session
---- @field bufnr integer
---- @field backend 'pi' | 'claude' | 'codex' The agent, which names the buffer, like claude://<session id>
---- @field id string
---- @field client otto.Client | otto.ClaudeClient | otto.CodexClient
---- @field tools table<string, { name: string, args: table }> Tool calls by id, until their result arrives
---- @field edits vim.quickfix.entry[] Files that pi edited, at the first changed line
---- @field commands otto.Command[] Extension commands, prompt templates and skills
---- @field tail? 'user' | 'text' | 'tool' | 'error' | 'note' Kind of the last block, which spaces the next one
---- @field started? integer When the agent started working, in seconds since the epoch
---- @field answered? boolean Whether the agent answered since it started, unlike for commands like /compact
---- @field text_row? integer First row of the last text block
---- @field group? otto.Group Tools since the last text
---- @field opened otto.Fold[] Groups of tools of the turn that the agent is running, open until it settles
---- @field state? otto.State Shown in the winbar
---- @field naming? boolean Whether a name is on its way, from the user or `name_after`
---- @field follow_up? boolean Whether the prompt being submitted waits for pi to finish, instead of steering
-
-local claude = require('otto.claude')
-local codex = require('otto.codex')
-local commands = require('otto.commands')
-local highlight = require('otto.highlight')
 require('otto.highlights')
-local lsp = require('otto.lsp')
-local pick = require('otto.pick')
-local prompt = require('otto.prompt')
-local resume = require('otto.resume')
-local rpc = require('otto.rpc')
-local transcript = require('otto.transcript')
-local winbar = require('otto.winbar')
+local commands = require('otto.ui.commands')
+local highlight = require('otto.highlight')
+local history = require('otto.ui.history')
+local pick = require('otto.ui.pick')
+local prompt_area = require('otto.ui.prompt_area')
+local providers = require('otto.providers')
+local session = require('otto.session')
+local util = require('otto.util')
+local winbar = require('otto.ui.winbar')
 
 local M = {}
 
-local sessions = {} --- @type table<integer, otto.Session> by buffer
+local sessions = session.sessions
 local names = {} --- @type table<string, string> of new sessions by buffer name, until they start
 
 -- the buffer has no parser, see `highlight.lua`, but plugins that parse it themselves, like blink.pairs, look up its
 -- language
 vim.treesitter.language.register('markdown', 'otto')
 
-local winbar_events = { 'agent_settled', 'compaction_end', 'thinking_level_changed', 'session_info_changed' }
-
---- @param session otto.Session
---- @param event table
-local function on_event(session, event)
-  if vim.list_contains(winbar_events, event.type) then rpc.run(function() winbar.refresh(session) end) end
-  if event.type == 'agent_start' then
-    session.started = os.time()
-    session.answered = false
-    prompt.set_status(session.bufnr, 'Working')
-  elseif event.type == 'agent_settled' then
-    vim.cmd.checktime() -- reloads the files the agent edited
-    prompt.set_status(session.bufnr, nil)
-    if session.started ~= nil and (session.answered or event.aborted) then
-      transcript.worked(session, os.time() - session.started, event.aborted)
-    end
-    session.started = nil
-    transcript.settled(session)
-  elseif event.type == 'tool_execution_start' then
-    transcript.tool_started(session, event)
-  elseif event.type == 'message_update' then
-    local update = event.assistantMessageEvent.type
-    if update == 'thinking_start' then prompt.set_status(session.bufnr, 'Thinking') end
-    if update == 'thinking_end' and prompt.status(session.bufnr) == 'Thinking' then
-      prompt.set_status(session.bufnr, 'Working')
-    end
-  elseif event.type == 'compaction_start' then
-    prompt.set_status(session.bufnr, 'Compacting')
-  elseif event.type == 'queue_update' then
-    prompt.set_queue(session.bufnr, event.steering, event.followUp)
-  elseif event.type == 'compaction_end' then
-    -- compacting can happen while the agent works
-    prompt.set_status(session.bufnr, session.started ~= nil and 'Working' or nil)
-    if event.result ~= nil then transcript.compacted(session, event.result.summary, event.result.tokensBefore) end
-  elseif event.type == 'message_end' then
-    if event.message.role == 'assistant' then session.answered = true end
-    transcript.render(session, event.message)
-  elseif event.type == 'session_created' then
-    -- Codex creates the ids of its sessions, which then name the buffer
-    session.id = event.id
-    vim.api.nvim_buf_set_name(session.bufnr, session.backend .. '://' .. event.id)
-  end
-end
-
---- Opens the location in the previous window, or this one when there's no other
---- @param target otto.Target
-local function open(target)
-  local previous = vim.fn.win_getid(vim.fn.winnr('#'))
-  if previous ~= 0 and previous ~= vim.api.nvim_get_current_win() then vim.api.nvim_set_current_win(previous) end
-  vim.cmd.edit(vim.fn.fnameescape(target.path))
-  if target.lnum ~= nil then
-    vim.api.nvim_win_set_cursor(0, { math.min(target.lnum, vim.api.nvim_buf_line_count(0)), 0 })
-    vim.cmd('normal! zz')
-  end
-end
-
---- @param session otto.Session
-local function keymaps(session)
-  local client = session.client
-  local function map(mode, lhs, rhs, desc, expr)
-    vim.keymap.set(mode, lhs, rhs, { buf = session.bufnr, desc = 'Otto: ' .. desc, expr = expr })
-  end
-
-  -- submitting steers while pi is working. <CR> in insert mode adds a line, like <S-CR> in prompt buffers
-  map('i', '<CR>', '<S-CR>', 'New line')
-  map('n', '<CR>', function()
-    local target = transcript.target_at(session.bufnr, vim.fn.line('.') - 1)
-    if target == nil then return 'A<CR><Esc>' end
-    vim.schedule(function() open(target) end) -- windows can't change while the mapping evaluates
-    return ''
-  end, 'Open the location under the cursor, or submit', true)
-  map('n', '<C-s>', 'A<CR><Esc>', 'Submit')
-  map('i', '<C-s>', '<CR>', 'Submit')
-  map('i', '<M-CR>', function()
-    session.follow_up = true
-    return '<CR>'
-  end, 'Submit as follow-up', true)
-  map('n', '<C-c>', function()
-    rpc.run(function()
-      -- the queued prompts go back to the prompt first, since aborting would continue with them
-      local queued = client:call({ type = 'clear_queue' })
-      local lines = vim.list_extend(vim.list_extend({}, queued.steering), queued.followUp)
-      if #lines == 0 then return client:request({ type = 'abort' }) end
-      local input = vim.fn.prompt_getinput(session.bufnr)
-      if input ~= '' then table.insert(lines, input) end
-      local row = vim.api.nvim_buf_get_mark(session.bufnr, ':')[1] - 1
-      vim.api.nvim_buf_set_lines(session.bufnr, row, -1, false, vim.split(table.concat(lines, '\n'), '\n'))
-    end)
-  end, 'Take back queued prompts, or abort')
-  map({ 'n', 'i' }, '<C-CR>', function()
-    if prompt.has_queue(session.bufnr) then client:request({ type = 'abort' }) end
-  end, 'Send queued prompts now')
-  map('n', 'dd', function()
-    -- deleting the line that the prompt starts on, when it's the last, would leave the prompt nowhere to start
-    local prompt_lnum = vim.api.nvim_buf_get_mark(session.bufnr, ':')[1]
-    return vim.fn.line('.') == prompt_lnum and prompt_lnum == vim.fn.line('$') and 'cc<Esc>' or 'dd'
-  end, 'Delete line', true)
-  map('n', 'gq', function()
-    vim.fn.setqflist({}, ' ', { title = session.id .. ' edits', items = session.edits })
-    vim.cmd.copen()
-  end, 'Edits to quickfix')
-  local function jump_to_prompt(backward)
-    local row = transcript.find_prompt(session.bufnr, vim.fn.line('.') - 1, backward)
-    if row ~= nil then vim.api.nvim_win_set_cursor(0, { row + 1, 0 }) end
-  end
-  map('n', ']]', function() jump_to_prompt(false) end, 'Next prompt')
-  map('n', '[[', function() jump_to_prompt(true) end, 'Previous prompt')
-  map('n', '<C-p>', function() commands.run(session, '/model') end, 'Select model')
-  map('n', '<S-Tab>', function()
-    client:request({ type = 'cycle_thinking_level' }) -- the winbar shows the level
-  end, 'Cycle thinking level')
-end
-
---- Names the session after its first prompt, like "fix_winbar_highlights", with a quick pi
---- @async
---- @param session otto.Session
---- @param text string
-local function name_after(session, text)
-  local message = 'Name a coding session that starts with this prompt, in 2 to 4 words of snake_case. '
-    .. 'Reply with only the name.\n\n'
-    .. text
-  local name = rpc.ask('naming', message, { '--no-tools', '--no-skills', '--thinking', 'off' })
-  name = vim.trim(name):lower():gsub('[^%w]+', '_'):gsub('^_+', ''):gsub('_+$', '')
-  if name ~= '' then session.client:call({ type = 'set_session_name', name = name }) end
-end
-
---- @param session otto.Session
---- @param text string
-local function on_submit(session, text)
-  local follow_up = session.follow_up
-  session.follow_up = nil
-  local handled = commands.run(session, text)
-  transcript.submitted(session, text)
-  local message = vim.trim(text)
-  if handled or message == '' then return end
-  if session.state ~= nil and session.state.name == nil and not session.naming then
-    session.naming = true
-    rpc.run(function() name_after(session, message) end)
-  end
-  local behavior = follow_up and 'followUp' or 'steer'
-  session.client:request({ type = 'prompt', message = message, streamingBehavior = behavior })
-end
-
---- Starts pi for the session named by the buffer, and renders its history
---- @param bufnr integer
-local function load(bufnr)
-  local uri = vim.api.nvim_buf_get_name(bufnr)
-  local backend, id = uri:match('^(%a+)://(.+)')
-  -- agents take a display name, which keeps them from naming the session after its first prompt
-  local name = names[uri]
-  names[uri] = nil
-  local args = name and { '--name', name } or {}
-  --- @type otto.Session
-  --- @diagnostic disable-next-line: missing-fields
-  local session = { bufnr = bufnr, backend = backend, id = id, tools = {}, edits = {}, commands = {}, opened = {} }
-  session.naming = #args > 0 -- the name is on its way already
-  local function events(event) on_event(session, event) end
-  if backend == 'claude' then
-    session.client = claude.start(id, events, args)
-  elseif backend == 'codex' then
-    session.client = codex.start(id, events, name)
-  else
-    session.client = rpc.start(id, vim.list_extend({ '--session-id', id }, args), events)
-  end
-  sessions[bufnr] = session
-
-  -- before anything changes the buffer, which would start the window's folding, like treesitter's, which then parses
-  -- the whole transcript after every change
-  for _, win in ipairs(vim.fn.win_findbuf(bufnr)) do
-    vim.wo[win][0].foldmethod = 'manual'
-  end
-  vim.bo[bufnr].buftype = 'prompt'
-  vim.bo[bufnr].bufhidden = 'hide'
-  vim.bo[bufnr].swapfile = false
-  vim.bo[bufnr].filetype = 'otto'
-  vim.b[bufnr].completion = true -- blink.cmp skips prompt buffers otherwise
-  vim.fn.prompt_setprompt(bufnr, '')
-  vim.fn.prompt_setcallback(bufnr, function(text) on_submit(session, text) end)
-  -- which may have been started for the filetype
-  vim.treesitter.stop(bufnr)
-  keymaps(session)
-  lsp.attach(session)
-  transcript.clear(bufnr)
-
-  rpc.run(function()
-    for _, msg in ipairs(session.client:call({ type = 'get_messages' }).messages) do
-      transcript.render(session, msg)
-    end
-    -- after the history, since Claude Code only lists its commands once it starts
-    session.commands = session.client:call({ type = 'get_commands' }).commands
-    winbar.refresh(session)
-  end)
-end
-
---- Restarts pi for the session's buffer, and renders the session again
---- @param bufnr integer
---- @param id? string Session to switch the buffer to
-function M.restart(bufnr, id)
-  sessions[bufnr].client:close()
-  if id ~= nil then vim.api.nvim_buf_set_name(bufnr, sessions[bufnr].backend .. '://' .. id) end
-  load(bufnr)
-end
-
---- Opens the session, creating it when it doesn't exist. Ids may contain letters, numbers, `.`, `_` and `-`, and
---- other characters become `_`
---- @param id string
-function M.open(id) vim.cmd.edit('pi://' .. id:gsub('[^%w._-]+', '_')) end
-
---- Opens a new session, which is named after its first prompt unless it's given a name. pi's ids are the name, or
---- when the session started, and Claude Code's are always UUIDs. Codex's start like pi's, until it creates them
+--- Opens a new session, which is named after its first prompt unless it's given a name
 --- @param name? string
---- @param backend? 'pi' | 'claude' | 'codex' Defaults to pi
-function M.new(name, backend)
-  local id = backend == 'claude' and claude.uuid() or (name or os.date('%Y_%m_%d_%H%M%S')):gsub('[^%w._-]+', '_')
-  local uri = ('%s://%s'):format(backend or 'pi', id)
+--- @param provider? string Defaults to pi
+function M.new(name, provider)
+  provider = provider or 'pi'
+  local id = providers.get(provider).new_id(name)
+  -- like a session of the same name, or of the same second, that isn't saved yet
+  local uri, count = ('%s://%s'):format(provider, id), 1
+  while vim.fn.bufexists(uri) == 1 do
+    count = count + 1
+    uri = ('%s://%s_%d'):format(provider, id, count)
+  end
   names[uri] = name
   vim.cmd.edit(uri)
 end
@@ -267,39 +44,22 @@ function M.send(first, last)
   M.append(first == last and ('`%s:%d`'):format(path, first) or ('`%s:%d-%d`'):format(path, first, last))
 end
 
---- @return vim.fn.getbufinfo.ret.item[] Buffers of the open sessions, most recently used first
+--- @return otto.Session[] The open sessions, most recently used first
 local function open_sessions()
   local infos = vim.tbl_filter(
     function(info) return sessions[info.bufnr] ~= nil end,
     vim.fn.getbufinfo({ bufloaded = 1 })
   )
   table.sort(infos, function(a, b) return a.lastused > b.lastused end)
-  return infos
+  return vim.tbl_map(function(info) return sessions[info.bufnr] end, infos)
 end
 
---- Picks an open session, and switches to it
-local function pick_session()
-  --- @param info vim.fn.getbufinfo.ret.item
-  --- @return string? name that pi gave the session
-  local function name(info) return (sessions[info.bufnr].state or {}).name end
-  local opts = {
-    prompt = 'Session: ',
-    text = function(info) return name(info) or sessions[info.bufnr].id end,
-    format = function(info)
-      local id = sessions[info.bufnr].id
-      if name(info) == nil then return { { text = id } } end
-      return { { text = name(info) }, { text = '  ' .. id, hl = 'Comment' } }
-    end,
-  }
-  pick.pick(open_sessions(), opts, function(info)
-    if info ~= nil then vim.cmd.buffer(info.bufnr) end
-  end)
-end
-
---- Appends text to the prompt of the most recently used session, or a new one, and starts insert mode there
+--- Appends text to the prompt of the session, the most recently used one by default, or a new one, and starts insert
+--- mode there
 --- @param text string
-function M.append(text)
-  local recent = open_sessions()[1]
+--- @param bufnr? integer Of the session
+function M.append(text, bufnr)
+  local recent = sessions[bufnr] or open_sessions()[1]
   if recent ~= nil then
     vim.cmd.buffer(recent.bufnr)
   else
@@ -307,7 +67,8 @@ function M.append(text)
   end
 
   local line = vim.api.nvim_buf_get_lines(0, -2, -1, false)[1]
-  vim.api.nvim_buf_set_text(0, -1, #line, -1, #line, { (line:match('%s$') and '' or ' ') .. text .. ' ' })
+  local space = (line == '' or line:match('%s$')) and '' or ' '
+  vim.api.nvim_buf_set_text(0, -1, #line, -1, #line, { space .. text .. ' ' })
   vim.cmd.startinsert({ bang = true })
 end
 
@@ -315,32 +76,42 @@ end
 --- highlight the first row of wrapped lines: https://github.com/neovim/neovim/issues/12866
 --- @return string
 function M.statuscolumn()
-  local bufnr = vim.api.nvim_win_get_buf(vim.g.statusline_winid)
-  return transcript.is_prompt(bufnr, vim.v.lnum - 1) and '%#OttoPrompt#  ' or '  '
+  local current = sessions[vim.api.nvim_win_get_buf(vim.g.statusline_winid)]
+  return current and current.buffer:is_prompt(vim.v.lnum - 1) and '%#OttoPrompt#  ' or '  '
 end
 
 --- @return string
 function M.winbar()
-  local session = sessions[vim.api.nvim_win_get_buf(vim.g.statusline_winid)]
-  return session and winbar.render(session) or ''
+  local current = sessions[vim.api.nvim_win_get_buf(vim.g.statusline_winid)]
+  return current and winbar.render(current) or ''
 end
 
--- pi only saves sessions with messages, so an empty session only has its buffer to remove, once it's been hidden for a
--- while
+-- agents only save sessions with messages, so an empty session only has its buffer to remove, once it's been hidden
+-- for a while
 local cleanup_delay = 10000
 local shown = {} --- @type table<integer, integer> times each session buffer was shown in a window
 --- @param bufnr integer
 --- @return boolean
 local function is_empty(bufnr)
+  -- prompts render once the agent reads them
+  local state = sessions[bufnr] and sessions[bufnr].state
+  -- or one that failed to load, which has no prompt
+  if state == nil then return true end
+  if state.working ~= nil or #state.queue > 0 then return false end
   return vim.api.nvim_buf_get_mark(bufnr, ':')[1] == 1 and vim.fn.prompt_getinput(bufnr) == ''
 end
 
 local group = vim.api.nvim_create_augroup('otto', {})
-local patterns = { 'pi://*', 'claude://*', 'codex://*' }
+local patterns = vim.tbl_map(function(name) return name .. '://*' end, vim.tbl_keys(providers.providers))
 vim.api.nvim_create_autocmd('BufReadCmd', {
   group = group,
   pattern = patterns,
-  callback = function(ev) load(ev.buf) end,
+  callback = function(ev)
+    local uri = vim.api.nvim_buf_get_name(ev.buf)
+    local name = names[uri]
+    names[uri] = nil
+    session.load(ev.buf, name)
+  end,
 })
 vim.api.nvim_create_autocmd('BufWinEnter', {
   group = group,
@@ -348,7 +119,7 @@ vim.api.nvim_create_autocmd('BufWinEnter', {
   callback = function(ev)
     local wo = vim.wo[0][0]
     wo.foldmethod = 'manual'
-    transcript.fold(ev.buf)
+    if sessions[ev.buf] ~= nil then sessions[ev.buf].buffer:fold() end
     wo.foldtext = ''
     wo.conceallevel = 0 -- concealed lines, like code fences, break scrolling
     wo.wrap = true
@@ -367,26 +138,31 @@ vim.api.nvim_create_autocmd({ 'BufEnter', 'CursorMoved', 'InsertEnter', 'TextCha
   group = group,
   pattern = patterns,
   callback = function(ev)
-    vim.schedule(function() prompt.pin(ev.buf) end)
+    vim.schedule(function()
+      if sessions[ev.buf] ~= nil then prompt_area.pin(ev.buf) end
+    end)
   end,
 })
 vim.api.nvim_create_autocmd({ 'TextChanged', 'TextChangedI' }, {
   group = group,
   pattern = patterns,
-  callback = function(ev) highlight.prompt(ev.buf) end,
+  callback = function(ev)
+    if sessions[ev.buf] ~= nil then highlight.prompt(ev.buf) end
+  end,
 })
 -- like when the command line grows, which would cover the end of the prompt, or scrolling past the end
 vim.api.nvim_create_autocmd({ 'WinResized', 'WinScrolled' }, {
   group = group,
   callback = function()
     local bufnr = vim.api.nvim_get_current_buf()
-    if sessions[bufnr] ~= nil then prompt.pin(bufnr) end
+    if sessions[bufnr] ~= nil then prompt_area.pin(bufnr) end
   end,
 })
 vim.api.nvim_create_autocmd('InsertEnter', {
   group = group,
   pattern = patterns,
   callback = function(ev)
+    if sessions[ev.buf] == nil then return end
     -- insert mode opens the fold under the cursor before the prompt buffer moves the cursor to the prompt
     local prompt_lnum = vim.api.nvim_buf_get_mark(ev.buf, ':')[1]
     if vim.fn.line('.') >= prompt_lnum then return end
@@ -409,30 +185,44 @@ vim.api.nvim_create_autocmd('BufUnload', {
   group = group,
   pattern = patterns,
   callback = function(ev)
-    if sessions[ev.buf] ~= nil then sessions[ev.buf].client:close() end
+    if sessions[ev.buf] ~= nil then
+      history.save_drafts({ ev.buf })
+      sessions[ev.buf]:close()
+      sessions[ev.buf] = nil
+    end
   end,
+})
+vim.api.nvim_create_autocmd('VimLeavePre', {
+  group = group,
+  callback = function() history.save_drafts(vim.tbl_keys(sessions)) end,
 })
 
 --- @type table<string, fun(arg?: string, cmd: vim.api.keyset.create_user_command.command_args)>
 local subcommands = {
-  pi = function(name) M.new(name, 'pi') end,
-  claude = function(name) M.new(name, 'claude') end,
-  codex = function(name) M.new(name, 'codex') end,
   send = function(_, cmd) M.send(cmd.line1, cmd.line2) end,
   resume = function(id)
-    if id == nil then return resume.pick() end
-    local saved = vim.iter(resume.list()):find(function(session) return session.id == id end)
-    if saved == nil then return M.open(id) end
-    vim.cmd.edit(saved.uri)
+    if id == nil then return pick.sessions() end
+    local saved = vim.iter(providers.list()):find(function(info) return info.id == id end)
+    if saved == nil then return util.notify('no saved session ' .. id) end
+    vim.cmd.edit(saved.provider .. '://' .. saved.id)
   end,
-  pick = pick_session,
+  pick = pick.sessions,
 }
+for name in pairs(providers.providers) do
+  subcommands[name] = function(arg) M.new(arg, name) end
+end
 
--- :Otto pi [name], :Otto claude [name], :Otto codex [name], :Otto resume [id], :Otto pick, which :Otto defaults to, and :Otto send for the
--- current line or a range
+-- :Otto pi [name], :Otto claude [name], :Otto codex [name], :Otto resume [id], :Otto pick, which :Otto defaults to, and
+-- :Otto send for the current line or a range. In a session, the commands of the palette too, like :Otto compact
 vim.api.nvim_create_user_command('Otto', function(cmd)
   local subcommand = subcommands[cmd.fargs[1] or 'pick']
-  if subcommand == nil then return rpc.notify('unknown subcommand: ' .. cmd.fargs[1]) end
+  local current = sessions[vim.api.nvim_get_current_buf()]
+  if subcommand == nil and current ~= nil and commands.get(cmd.fargs[1]) then
+    local keys = commands.run(current, cmd.fargs[1])
+    if keys then vim.api.nvim_feedkeys(vim.keycode(keys), 'n', false) end
+    return
+  end
+  if subcommand == nil then return util.notify('unknown subcommand: ' .. cmd.fargs[1]) end
   local arg = table.concat(cmd.fargs, ' ', 2)
   subcommand(arg ~= '' and arg or nil, cmd)
 end, {
@@ -441,12 +231,16 @@ end, {
   complete = function(lead, line)
     local words = vim.split(line, '%s+')
     if #words <= 2 then
-      local names = vim.tbl_keys(subcommands)
-      table.sort(names)
-      return vim.tbl_filter(function(name) return vim.startswith(name, lead) end, names)
+      local subcommand_names = vim.tbl_keys(subcommands)
+      local current = sessions[vim.api.nvim_get_current_buf()]
+      for _, command in ipairs(current and commands.available(current) or {}) do
+        if subcommands[command.name] == nil then table.insert(subcommand_names, command.name) end
+      end
+      table.sort(subcommand_names)
+      return vim.tbl_filter(function(name) return vim.startswith(name, lead) end, subcommand_names)
     end
     if words[2] ~= 'resume' then return {} end
-    local ids = vim.tbl_map(function(session) return session.id end, resume.list())
+    local ids = vim.tbl_map(function(info) return info.id end, providers.list())
     return lead == '' and ids or vim.fn.matchfuzzy(ids, lead)
   end,
 })
