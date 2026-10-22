@@ -278,16 +278,6 @@ M.builtin = {
     run = function() return '<C-S-w>' end,
   },
   {
-    name = 'delete_line',
-    description = 'Delete line',
-    expr = true,
-    run = function(session)
-      -- deleting the line that the prompt starts on, when it's the last, would leave the prompt nowhere to start
-      local prompt_lnum = vim.api.nvim_buf_get_mark(session.bufnr, ':')[1]
-      return vim.fn.line('.') == prompt_lnum and prompt_lnum == vim.fn.line('$') and 'cc<Esc>' or 'dd'
-    end,
-  },
-  {
     name = 'next_prompt',
     description = 'Next prompt',
     palette = false,

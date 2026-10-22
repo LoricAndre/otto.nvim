@@ -150,7 +150,9 @@ vim.api.nvim_create_autocmd({ 'TextChanged', 'TextChangedI' }, {
   group = group,
   pattern = patterns,
   callback = function(ev)
-    if sessions[ev.buf] ~= nil then highlight.prompt(ev.buf) end
+    if sessions[ev.buf] == nil then return end
+    sessions[ev.buf].buffer:anchor()
+    highlight.prompt(ev.buf)
   end,
 })
 vim.api.nvim_create_autocmd({ 'WinResized', 'WinScrolled' }, {

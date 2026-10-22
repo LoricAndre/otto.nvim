@@ -45,7 +45,6 @@ local keymaps = {
   ['<C-s>'] = 'submit',
   ['<M-CR>'] = 'follow_up',
   ['<C-w>'] = 'delete_word',
-  ['dd'] = 'delete_line',
   ['<C-c>'] = 'abort',
   ['<C-CR>'] = 'send_now',
   [']]'] = 'next_prompt',

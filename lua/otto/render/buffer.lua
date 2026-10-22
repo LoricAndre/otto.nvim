@@ -69,6 +69,23 @@ function Buffer:modify(fn)
   if not ok then error(err, 0) end
 end
 
+--- Puts the prompt back right below the separator, which moves with the text, unlike the prompt's mark. Edits in the
+--- prompt can leave the mark below its start, like `P` on its first line or undoing a deletion there, or past the end
+--- of the buffer, like deleting all of it
+function Buffer:anchor()
+  local bufnr = self.bufnr
+  if not vim.bo[bufnr].modifiable then return end
+  local separator_mark = vim.api.nvim_buf_get_extmarks(bufnr, separator_ns, -1, 0, { limit = 1 })[1]
+  local row = separator_mark and separator_mark[2] + 1 or 0
+  local missing = row + 1 - vim.api.nvim_buf_line_count(bufnr)
+  if missing > 0 then
+    -- with the edit that deleted the prompt, so that undoing brings it back, unless the edit was an undo
+    pcall(vim.cmd.undojoin)
+    vim.api.nvim_buf_set_lines(bufnr, -1, -1, false, vim.split(('\n'):rep(missing - 1), '\n'))
+  end
+  if vim.api.nvim_buf_get_mark(bufnr, ':')[1] ~= row + 1 then vim.api.nvim_buf_set_mark(bufnr, ':', row + 1, 0, {}) end
+end
+
 --- @param namespace integer
 --- @param row integer
 --- @param col integer where the chunks start
