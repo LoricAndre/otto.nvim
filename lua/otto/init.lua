@@ -132,14 +132,10 @@ vim.api.nvim_create_autocmd('BufWinEnter', {
     wo.winbar = "%!v:lua.require'otto'.winbar()"
     wo.winhighlight = 'Folded:Normal' -- folded tools look like the rest of the transcript
     shown[ev.buf] = (shown[ev.buf] or 0) + 1
-  end,
-})
-vim.api.nvim_create_autocmd({ 'BufEnter', 'CursorMoved', 'InsertEnter', 'TextChanged', 'TextChangedI' }, {
-  group = group,
-  pattern = patterns,
-  callback = function(ev)
+    -- once the window settles, so that the first output follows the prompt too
+    local win = vim.api.nvim_get_current_win()
     vim.schedule(function()
-      if sessions[ev.buf] ~= nil then prompt_area.pin(ev.buf) end
+      if vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_buf(win) == ev.buf then prompt_area.watch(win) end
     end)
   end,
 })
@@ -150,12 +146,12 @@ vim.api.nvim_create_autocmd({ 'TextChanged', 'TextChangedI' }, {
     if sessions[ev.buf] ~= nil then highlight.prompt(ev.buf) end
   end,
 })
--- like when the command line grows, which would cover the end of the prompt, or scrolling past the end
 vim.api.nvim_create_autocmd({ 'WinResized', 'WinScrolled' }, {
   group = group,
   callback = function()
-    local bufnr = vim.api.nvim_get_current_buf()
-    if sessions[bufnr] ~= nil then prompt_area.pin(bufnr) end
+    for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+      if sessions[vim.api.nvim_win_get_buf(win)] ~= nil then prompt_area.scrolled(win) end
+    end
   end,
 })
 vim.api.nvim_create_autocmd('InsertEnter', {

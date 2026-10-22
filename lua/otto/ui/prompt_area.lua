@@ -26,17 +26,62 @@ function M.new(bufnr, state, layout)
   return setmetatable({ bufnr = bufnr, state = state, layout = layout, started = {} }, Area)
 end
 
---- Keeps the end of the buffer at the bottom of the window while in the prompt, as output arrives above it and folds
---- change, so that the prompt stays in view without scrolling past the end
+--- Where the window shows the prompt, which the separator isn't part of
+--- @class otto.View
+--- @field height integer Of the window
+--- @field offset? integer From the prompt of the line at the bottom, or nil for the end of the buffer
+
+--- Remembers where the window shows the prompt
+--- @param win integer
+function M.watch(win)
+  local bufnr = vim.api.nvim_win_get_buf(win)
+  vim.w[win].otto_view = vim.api.nvim_win_call(win, function()
+    local bottom = vim.fn.line('w$')
+    local prompt = vim.api.nvim_buf_get_mark(bufnr, ':')[1]
+    if bottom < prompt then return nil end
+    local offset = bottom < vim.api.nvim_buf_line_count(bufnr) and bottom - prompt or nil
+    return { height = vim.api.nvim_win_get_height(win), offset = offset }
+  end)
+end
+
+--- Puts the line of the view back at the bottom of the window
+--- @param win integer
+local function scroll(win)
+  local view = vim.w[win].otto_view --- @type otto.View?
+  if view == nil then return end
+  local bufnr = vim.api.nvim_win_get_buf(win)
+  vim.api.nvim_win_call(win, function()
+    local last = vim.api.nvim_buf_line_count(bufnr)
+    local prompt = vim.api.nvim_buf_get_mark(bufnr, ':')[1]
+    local cursor = vim.api.nvim_win_get_cursor(win)
+    local scrolloff = vim.api.nvim_get_option_value('scrolloff', { win = win, scope = 'local' })
+    vim.wo[win].scrolloff = 0 -- so that the line goes to the very bottom
+    vim.api.nvim_win_set_cursor(win, { math.min(prompt + (view.offset or last), last), 0 })
+    vim.cmd('normal! zb')
+    vim.api.nvim_set_option_value('scrolloff', scrolloff, { win = win, scope = 'local' })
+    -- in the transcript, the cursor moves with the text like with <C-e>
+    vim.cmd('normal! H')
+    if cursor[1] >= vim.fn.line('.') then vim.api.nvim_win_set_cursor(win, cursor) end
+  end)
+end
+
+--- Keeps the same lines of the prompt in view in the windows that show it, as output arrives above it and folds
+--- change. With the end of the buffer at the bottom, that's the whole prompt, without scrolling past the end
 --- @param bufnr integer
-function M.pin(bufnr)
-  if vim.api.nvim_get_current_buf() ~= bufnr then return end
-  if vim.fn.line('.') < vim.api.nvim_buf_get_mark(bufnr, ':')[1] then return end
-  local cursor = vim.api.nvim_win_get_cursor(0)
-  -- the prompt can span lines, and the cursor may not be on the last
-  vim.api.nvim_win_set_cursor(0, { vim.api.nvim_buf_line_count(bufnr), 0 })
-  vim.cmd('normal! zb')
-  vim.api.nvim_win_set_cursor(0, cursor)
+function M.follow(bufnr)
+  for _, win in ipairs(vim.fn.win_findbuf(bufnr)) do
+    scroll(win)
+    M.watch(win)
+  end
+end
+
+--- Keeps the same line at the bottom when the window's height changed, like when the command line grows, and otherwise
+--- remembers where it scrolled to
+--- @param win integer
+function M.scrolled(win)
+  local view = vim.w[win].otto_view
+  if view ~= nil and view.height ~= vim.api.nvim_win_get_height(win) then scroll(win) end
+  M.watch(win)
 end
 
 --- Draws the area again, after the transcript or the state changed
@@ -84,7 +129,7 @@ function Area:draw()
     local opts = { virt_lines = lines, virt_lines_above = true }
     vim.api.nvim_buf_set_extmark(bufnr, ns, math.max(row - 2, 0), 0, opts)
   end
-  M.pin(bufnr)
+  M.follow(bufnr)
 end
 
 --- Counts the time while the agent works, and draws the area again

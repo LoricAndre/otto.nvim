@@ -88,7 +88,7 @@ local function set_prompt(bufnr, text)
   vim.api.nvim_buf_set_lines(bufnr, row, -1, false, lines)
   if vim.api.nvim_get_current_buf() ~= bufnr then return end
   vim.api.nvim_win_set_cursor(0, { vim.api.nvim_buf_line_count(bufnr), #lines[#lines] })
-  prompt_area.pin(bufnr)
+  prompt_area.follow(bufnr)
 end
 
 --- Keeps what the prompt holds, when it changed from the entry it shows
