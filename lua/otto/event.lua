@@ -4,18 +4,27 @@
 local M = {}
 
 --- @class otto.Event
---- @field type 'user' | 'text' | 'tool_call' | 'tool_result' | 'compaction' | 'error' | 'turn_end'
+--- @field type 'user' | 'text' | 'tool_call' | 'tool_result' | 'message' | 'compaction' | 'error' | 'turn_end'
 --- @field at integer Milliseconds since the epoch, from the provider's record when it has one
 --- user, text
 --- @field text? string
 --- tool_call, tool_result
 --- @field id? string
---- @field tool? string `read`, `edit`, `write`, `bash`, `grep`, `find`, `ls`, `web_search`, `fetch`, or the agent's own
+--- @field tool? string `read`, `edit`, `write`, `bash`, `grep`, `find`, `ls`, `web_search`, `fetch`, `agent`, `message`, or
+--- the agent's own
 --- @field args? table See `otto.ToolArgs`
 --- @field ok? boolean
 --- @field output? string
 --- @field exit_code? integer Of commands
 --- @field diff? otto.DiffLine[] Of edits
+--- @field child? string Buffer name of the session that a subagent tool started, like claude://<session>/<agent>
+--- message, from another agent, like a subagent handing back its report. The agent's own are `message` tools
+--- @field from? string Name of the agent
+--- @field uri? string Buffer name of its session
+--- @field kind? 'spawn' | 'handback' | 'done' | 'failed' | 'stopped' Of messages that start or end a subagent
+--- @field tokens? integer That the subagent used, when it ended
+--- @field tools? integer That the subagent called, when it ended
+--- @field seconds? integer That the subagent ran for, when it ended
 --- compaction
 --- @field summary? string
 --- @field before? integer Tokens in the context
@@ -37,6 +46,23 @@ local M = {}
 --- @field pattern? string grep, find
 --- @field query? string web_search
 --- @field urls? string[] fetch
+--- @field prompt? string agent
+--- @field type? string agent: its kind, like "general-purpose"
+--- @field background? boolean agent, bash
+--- @field to? string message: name of the agent
+--- @field text? string message
+--- @field summary? string message
+
+--- @class otto.Background A subagent or command that the agent runs in the background, or a subagent that it waits for
+--- @field id string
+--- @field kind 'subagent' | 'command'
+--- @field name string
+--- @field call_id? string Of the tool call that started it
+--- @field since integer When it started, in milliseconds of the event loop
+--- @field activity? string Like the subagent's last tool
+--- @field tools? integer
+--- @field tokens? integer
+--- @field uri? string Buffer name of a subagent's session
 
 --- @class otto.DiffLine
 --- @field sign '+' | '-' | ' ' | nil Nothing for the gaps between hunks
@@ -44,7 +70,7 @@ local M = {}
 --- @field text string
 
 --- @class otto.Status
---- @field type 'working' | 'queue' | 'info' | 'request'
+--- @field type 'working' | 'queue' | 'info' | 'background' | 'request'
 --- working
 --- @field state? 'working' | 'thinking' | 'compacting' Nothing when the agent stopped
 --- queue: prompts that the agent hasn't read yet, including the one that was just sent
@@ -58,6 +84,9 @@ local M = {}
 --- @field window? integer Size of the context window
 --- @field context? integer Tokens in the context, as of the last answer or compaction
 --- @field cost? number Dollars, for the whole session
+--- @field parent? string Buffer name of the session that started this one, of subagents
+--- background: what the agent runs beside the conversation, replaced whole
+--- @field background? otto.Background[]
 --- request
 --- @field kind? 'select' | 'input' | 'confirm'
 --- @field prompt? string

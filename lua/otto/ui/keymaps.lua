@@ -30,6 +30,7 @@ M.defaults = {
   ['<localleader>y'] = { 'yank_here' },
   ['<localleader>o'] = { 'open_here' },
   ['<localleader>t'] = { 'terminal_here' },
+  ['<localleader>k'] = { 'stop_here' },
 }
 
 --- @return table<string, string> The key of each command that has one, for the palette

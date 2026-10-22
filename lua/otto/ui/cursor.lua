@@ -126,6 +126,19 @@ function M.open(session)
   nothing('nothing under the cursor to open')
 end
 
+--- Stops the subagent or command under the cursor, which runs in the background
+--- @async
+--- @param session otto.Session
+function M.stop(session)
+  local call = at_cursor(session).call
+  local item = call and vim.iter(session.state.background):find(function(item) return item.call_id == call.id end)
+  if item == nil then return nothing('nothing running under the cursor to stop') end
+  if session.handle.stop_task == nil then
+    return util.notify(session.provider.name .. " can't stop what it runs", vim.log.levels.WARN)
+  end
+  session.handle:stop_task(item.id)
+end
+
 --- Runs the command of the tool in a terminal
 --- @param session otto.Session
 function M.terminal(session)

@@ -21,6 +21,8 @@ local util = require('otto.util')
 --- @field working? 'working' | 'thinking' | 'compacting'
 --- @field since? integer When the agent started working, in milliseconds of the event loop
 --- @field queue { text: string, follow_up: boolean }[] Prompts that the agent hasn't read yet
+--- @field background otto.Background[] What the agent runs beside the conversation
+--- @field parent? string Buffer name of the session that started this one, of subagents
 --- @field commands otto.Command[] The agent's own
 
 --- @class otto.Session
@@ -44,8 +46,28 @@ local M = {}
 --- @type table<integer, otto.Session> by buffer
 M.sessions = {}
 
+--- @param uri? string Buffer name
+--- @return otto.Session? open with that name exactly, unlike `bufnr()`, which takes a parent's for its subagent's
+function M.find(uri)
+  for bufnr, session in pairs(M.sessions) do
+    if vim.api.nvim_buf_get_name(bufnr) == uri then return session end
+  end
+end
+
+--- @param uri? string
+--- @return string? name of the open session
+local function name_of(uri)
+  local other = M.find(uri)
+  return other and other.state.name
+end
+
 --- @param event otto.Event
 function Session:on_log(event)
+  -- by the names they have here, which subagents don't know of the sessions that started them
+  if event.type == 'message' then event.from = name_of(event.uri) or event.from end
+  if event.type == 'tool_call' and event.tool == 'message' and event.args.to == 'parent' then
+    event.args.to = name_of(self.state.parent) or event.args.to
+  end
   for _, op in ipairs(self.layout:add(event)) do
     self.buffer:apply(op)
   end
@@ -89,10 +111,16 @@ function Session:on_status(status)
       table.insert(state.queue, { text = text, follow_up = true })
     end
     self.area:draw()
+  elseif status.type == 'background' then
+    state.background = status.background
+    self.area:update()
+    vim.cmd.redrawstatus({ bang = true })
   elseif status.type == 'info' then
-    for _, key in ipairs({ 'id', 'name', 'model', 'effort', 'window', 'context', 'cost' }) do
+    for _, key in ipairs({ 'id', 'name', 'model', 'effort', 'window', 'context', 'cost', 'parent' }) do
       if status[key] ~= nil then state[key] = status[key] end
     end
+    -- reached from their parent, with <C-o> back
+    if status.parent ~= nil then vim.bo[self.bufnr].buflisted = false end
     -- like Codex, which creates the ids of its sessions
     if status.id ~= nil and vim.api.nvim_buf_get_name(self.bufnr) ~= self.provider.name .. '://' .. status.id then
       vim.api.nvim_buf_set_name(self.bufnr, self.provider.name .. '://' .. status.id)
@@ -168,7 +196,7 @@ function M.load(bufnr, name)
     { bufnr = bufnr, provider = provider, naming = name ~= nil, requests = vim.async.semaphore(1) },
     Session
   )
-  session.state = { id = id, queue = {}, commands = {} }
+  session.state = { id = id, queue = {}, commands = {}, background = {} }
   session.layout = layout.new()
   session.area = prompt_area.new(bufnr, session.state, session.layout)
   session.buffer = buffer.new(bufnr, function() session.area:draw() end)
@@ -181,6 +209,7 @@ function M.load(bufnr, name)
     on_status = function(status) session:on_status(status) end,
   })
   M.sessions[bufnr] = session
+  if session.handle.read_only then vim.bo[bufnr].modifiable = false end
 
   vim.fn.prompt_setcallback(bufnr, function(text) session:submit(text) end)
   keymaps.attach(session)

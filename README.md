@@ -23,7 +23,7 @@ vim.keymap.set('n', '<leader>ar', '<cmd>Otto resume<cr>', { desc = 'Resume sessi
 vim.keymap.set({ 'n', 'x' }, '<leader>as', ':Otto send<cr>', { desc = 'Send to agent' })
 ```
 
-In a session, `<M-x>` opens the commands, with their keys. Prompts go to the agent as written, so its own commands work as `/name args`, which the palette starts for you. Pickers use [minibuffer.nvim](https://github.com/saghen/minibuffer.nvim) when it's set up, and `vim.ui.select` otherwise.
+Pickers use [minibuffer.nvim](https://github.com/saghen/minibuffer.nvim) when it's set up, and `vim.ui.select` otherwise.
 
 | Key | Action |
 | --- | --- |
@@ -38,6 +38,7 @@ In a session, `<M-x>` opens the commands, with their keys. Prompts go to the age
 | `\e` | Edit the prompt under the cursor |
 | `\y`, `\o` | Yank, or open in a split, the prompt, tool output or code block under the cursor |
 | `\t` | Run the command under the cursor in a terminal |
+| `\k` | Stop the subagent or command under the cursor |
 | `\q` | Edits of the session to quickfix |
 
 Unlike my other projects, this project has been AI assisted, use at your own risk!

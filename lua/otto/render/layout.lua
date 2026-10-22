@@ -27,6 +27,7 @@ M.body_indent = body_indent
 --- @field call? otto.BlockCall Of tools, for the actions on them
 
 --- @class otto.BlockCall
+--- @field id? string Of the call
 --- @field tool string
 --- @field args table
 --- @field output? string Whole, which the lines may only show the start of
@@ -44,6 +45,7 @@ M.body_indent = body_indent
 --- @field lnum? integer Of the first line, which the next lines count up from
 --- @field parse? 'diff' | 'location' Whether the line number, or the location, comes from the text of each line
 --- @field col? integer Where the location starts in the lines
+--- @field uri? string Of a session, like a subagent's, instead of a location
 
 --- @class otto.Op
 --- @field type 'block' | 'settle' Settling folds the groups of the turn, which stay open while it runs
@@ -131,6 +133,10 @@ function Layout:tool_block(kind, header, sections, targets)
     fold = true,
   })
 end
+
+--- @param tokens integer
+--- @return string like "120k"
+local function thousands(tokens) return math.floor(tokens / 1000) .. 'k' end
 
 --- @param text string
 --- @return string[]
@@ -241,16 +247,38 @@ function Layout:tool_result(result)
     table.insert(sections, 1, tools.output(command, 'bash'))
   end
   local ops = self:grouped(tool, not result.ok, header, sections, count)
-  ops[1].block.call = { tool = tool, args = args, output = result.output }
+  ops[1].block.call = { id = result.id, tool = tool, args = args, output = result.output }
   if section.path ~= nil then
     table.insert(ops[1].block.targets, { index = 0, path = section.path, lnum = section.first })
   end
+  if result.child ~= nil then table.insert(ops[1].block.targets, { index = 0, uri = result.child }) end
   return ops
 end
 
---- @param tokens integer
---- @return string like "120k"
-local function thousands(tokens) return math.floor(tokens / 1000) .. 'k' end
+local kinds = { failed = 'OttoToolFailed', stopped = 'OttoToolFailed' }
+
+--- A message from another agent, like a subagent handing back its report, with what the subagent used when it ended
+--- @param message otto.Event
+--- @return otto.Op[]
+function Layout:message(message)
+  local header = { { 'from', 'OttoToolName' }, { ' ' .. message.from, 'OttoToolArg' } }
+  if message.kind ~= nil then
+    table.insert(header, { '  ' .. message.kind, kinds[message.kind] or 'OttoToolDetail' })
+  end
+  local usage = {}
+  if (message.seconds or 0) > 0 then table.insert(usage, tools.duration(message.seconds)) end
+  if (message.tools or 0) > 0 then
+    table.insert(usage, message.tools .. (message.tools == 1 and ' tool' or ' tools'))
+  end
+  if (message.tokens or 0) >= 1000 then table.insert(usage, thousands(message.tokens)) end
+  if #usage > 0 then table.insert(header, { '  ' .. table.concat(usage, ' · '), 'OttoStatusTime' }) end
+  local targets = message.uri and { { index = 0, uri = message.uri } } or {}
+  local text = vim.trim(message.text or '')
+  if text == '' then
+    return self:block({ kind = 'note', lines = { tools.join(header) }, indent = '', header = header, targets = targets })
+  end
+  return self:tool_block('note', header, { { lines = split(text), filetype = 'markdown' } }, targets)
+end
 
 --- @param compaction otto.Event
 --- @return otto.Op[]
@@ -303,6 +331,8 @@ function Layout:add(event)
     table.insert(self.running, { id = event.id, tool = call.tool, args = call.args })
   elseif event.type == 'tool_result' then
     return self:tool_result(event)
+  elseif event.type == 'message' then
+    return self:message(event)
   elseif event.type == 'compaction' then
     return self:compaction(event)
   elseif event.type == 'turn_end' then

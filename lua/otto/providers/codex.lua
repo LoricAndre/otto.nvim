@@ -67,6 +67,11 @@ local function diff_lines(change)
   return lines
 end
 
+--- @class otto.CodexContext What decoding items needs of the thread
+--- @field thread? string
+--- @field agents table<string, { name: string, uri: string }> Subagents by thread, named after their paths, since
+--- their nicknames are on their threads
+
 --- Tool calls of an item, of which file changes have one per file
 --- @param item table
 --- @return { id: string, tool: string, args: table }[]
@@ -110,12 +115,37 @@ local function results(item)
     :totable()
 end
 
+--- Subagents, which Codex's history only has the starts and ends of
+--- @param session_log otto.Log
+--- @param item table subAgentActivity
+--- @param context otto.CodexContext
+--- @param at? integer
+local function activity(session_log, item, context, at)
+  local thread = item.agentThreadId
+  local agent = context.agents[thread]
+  if item.kind == 'started' then
+    local name = vim.fs.basename(item.agentPath or '')
+    agent = { name = name ~= '' and name or thread:sub(-8), uri = ('codex://%s/%s'):format(context.thread, thread) }
+    context.agents[thread] = agent
+    session_log:tool_call(item.id, 'agent', { description = agent.name, type = item.model, background = true }, at)
+    return session_log:tool_result({ id = item.id, ok = true, output = '', child = agent.uri }, at)
+  end
+  if agent == nil then return end
+  if item.kind == 'interacted' then
+    session_log:tool_call(item.id, 'message', { to = agent.name }, at)
+    return session_log:tool_result({ id = item.id, ok = true, output = '' }, at)
+  end
+  local kind = item.kind == 'completed' and 'done' or 'stopped'
+  session_log:message({ from = agent.name, uri = agent.uri, kind = kind }, at)
+end
+
 --- Adds a completed item to the log, of which the tool calls may have been added when it started
 --- @param session_log otto.Log
 --- @param item table
 --- @param announced table<string, true> Tool calls in the log already
+--- @param context otto.CodexContext
 --- @param at? integer
-local function add(session_log, item, announced, at)
+local function add(session_log, item, announced, context, at)
   if item.type == 'userMessage' then return session_log:user(vim.trim(event.text_of(item.content)), at) end
   if item.type == 'agentMessage' then
     -- prompts after commentary steer the turn, which only ends when Codex says so
@@ -124,6 +154,7 @@ local function add(session_log, item, announced, at)
   end
   -- Codex keeps the summary to itself
   if item.type == 'contextCompaction' then return session_log:compaction({}, at) end
+  if item.type == 'subAgentActivity' then return activity(session_log, item, context, at) end
   for _, call in ipairs(calls(item)) do
     if not announced[call.id] then session_log:tool_call(call.id, call.tool, call.args, at) end
     announced[call.id] = nil
@@ -161,6 +192,8 @@ end
 --- @field unread { text: string, id: string }[] Prompts that Codex hasn't read yet
 --- @field follow_ups string[] Prompts that wait for the turn to complete
 --- @field created? boolean Whether the thread started with the handle, without history
+--- @field context otto.CodexContext
+--- @field running table<string, otto.Background> Subagents that run, by thread
 local Handle = {}
 Handle.__index = Handle
 
@@ -257,6 +290,26 @@ function Handle:approval(msg)
   })
 end
 
+function Handle:background_update()
+  local list = vim.tbl_values(self.running)
+  table.sort(list, function(a, b) return a.since < b.since end)
+  self.on_status({ type = 'background', background = list })
+end
+
+--- Keeps the subagents that run, from when they start until they end
+--- @param item table subAgentActivity
+function Handle:subagents(item)
+  local thread = item.agentThreadId
+  local agent = self.context.agents[thread]
+  if item.kind == 'started' and agent then
+    self.running[thread] =
+      { id = thread, kind = 'subagent', name = agent.name, call_id = item.id, since = vim.uv.now(), uri = agent.uri }
+  elseif item.kind == 'completed' or item.kind == 'interrupted' then
+    self.running[thread] = nil
+  end
+  self:background_update()
+end
+
 --- @param msg table
 function Handle:on_message(msg)
   if msg.method == nil then
@@ -274,6 +327,11 @@ function Handle:on_message(msg)
   end
 
   local item = params.item
+  -- subagents, which share the app-server, and only end in the history once the agent hears of it
+  if msg.method == 'thread/status/changed' and self.running[params.threadId] and params.status.type ~= 'active' then
+    self.running[params.threadId] = nil
+    return self:background_update()
+  end
   if msg.method == 'turn/started' then
     self.turn = params.turn.id
     self.turn_at = times(params.turn)
@@ -289,7 +347,8 @@ function Handle:on_message(msg)
   -- not of earlier turns, like commands that ran in the background, which the log can't add to
   elseif msg.method == 'item/completed' and params.turnId == self.turn then
     if item.type == 'userMessage' then self:read(item) end
-    add(self.log, item, self.announced, self.turn_at)
+    add(self.log, item, self.announced, self.context, self.turn_at)
+    if item.type == 'subAgentActivity' then self:subagents(item) end
     if item.type == 'contextCompaction' then self.on_status({ type = 'working', state = 'working' }) end
   elseif msg.method == 'error' and not params.willRetry then
     self.log:error(params.error.message, self.turn_at)
@@ -332,7 +391,7 @@ function Handle:replay()
   for _, turn in ipairs(turns) do
     local started, completed = times(turn)
     for _, item in ipairs(turn.items) do
-      add(self.log, item, {}, started)
+      add(self.log, item, {}, self.context, started)
     end
     if turn.error ~= nil then self.log:error(turn.error.message, started) end
     self.log:settle(turn.status == 'interrupted', completed)
@@ -420,7 +479,7 @@ function Handle:close() self.proc:close() end
 
 --- Releases what waits for the thread
 --- @param err? string When it failed to start
---- @param result? table Of `thread/start` or `thread/resume`
+--- @param result? table Of `thread/start` or `thread/resume`, which subagents' threads don't have
 function Handle:started(err, result)
   if err ~= nil then
     -- which raises in what waits for the thread, like the replay that every session starts with
@@ -428,7 +487,7 @@ function Handle:started(err, result)
     self.unread = {}
     self:queue_update()
     self:set_working(false)
-  else
+  elseif result ~= nil then
     self:on_thread(result)
   end
   for _, waiting in ipairs(self.waiting) do
@@ -440,6 +499,7 @@ end
 --- @param result table Of `thread/start` or `thread/resume`
 function Handle:on_thread(result)
   self.thread = result.thread.id
+  self.context.thread = self.thread
   self.model = result.model
   self.effort = result.reasoningEffort
   self.on_status({
@@ -457,6 +517,8 @@ end
 --- @param opts otto.OpenOpts
 --- @return otto.CodexHandle
 function M.open(id, opts)
+  -- subagents' threads, which only their parent's process can resume, so they're read
+  local parent, child = id:match('^([^/]+)/(.+)$')
   --- @type otto.CodexHandle
   local handle = setmetatable({
     log = log.new(opts.on_log, opts.on_status),
@@ -465,6 +527,9 @@ function M.open(id, opts)
     working = false,
     models = {},
     announced = {},
+    context = { agents = {} },
+    running = {},
+    read_only = child ~= nil,
     unread = {},
     follow_ups = {},
   }, Handle)
@@ -474,6 +539,8 @@ function M.open(id, opts)
     on_exit = function()
       handle.log:settle(true)
       handle:set_working(false)
+      handle.running = {}
+      handle:background_update()
     end,
   })
 
@@ -482,6 +549,16 @@ function M.open(id, opts)
     if err ~= nil then return handle:started(err) end
     handle.proc:send({ method = 'initialized' })
     handle:invoke('model/list', {}, function(_, data) handle.models = data and data.data or {} end)
+    if child ~= nil then
+      return handle:invoke('thread/read', { threadId = child }, function(read_err, result)
+        if result ~= nil then
+          handle.thread, handle.context.thread = child, child
+          local thread = result.thread
+          opts.on_status({ type = 'info', name = thread.agentNickname or thread.name, parent = 'codex://' .. parent })
+        end
+        handle:started(read_err)
+      end)
+    end
     if is_thread(id) then
       return handle:invoke(
         'thread/resume',

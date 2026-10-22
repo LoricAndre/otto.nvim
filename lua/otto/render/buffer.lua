@@ -16,8 +16,9 @@ local target_ns = vim.api.nvim_create_namespace('otto.targets')
 local separator = { { ('─'):rep(500), 'OttoSeparator' } } -- clipped to the window
 
 --- @class otto.Target A location that a line of the transcript is about, which <CR> opens
---- @field path string
+--- @field path? string
 --- @field lnum? integer
+--- @field uri? string Of a session, like a subagent's
 
 --- @class otto.Buffer
 --- @field bufnr integer
@@ -45,7 +46,9 @@ end
 function Buffer:modify(fn)
   local bufnr = self.bufnr
   local undolevels = vim.bo[bufnr].undolevels
+  local modifiable = vim.bo[bufnr].modifiable -- which read-only sessions aren't
   vim.bo[bufnr].undolevels = -1
+  vim.bo[bufnr].modifiable = true
 
   local prompt_row = vim.api.nvim_buf_get_mark(bufnr, ':')[1] - 1
   -- the undo levels come back even when it fails
@@ -62,6 +65,7 @@ function Buffer:modify(fn)
     })
   end
   vim.bo[bufnr].undolevels = undolevels
+  vim.bo[bufnr].modifiable = modifiable
   if not ok then error(err, 0) end
 end
 
@@ -182,6 +186,7 @@ function Buffer:target_at(row)
   local marks = vim.api.nvim_buf_get_extmarks(self.bufnr, target_ns, { row, -1 }, { 0, 0 }, { limit = 1 })
   local target = marks[1] and self.targets[marks[1][1]]
   if target == nil or row >= marks[1][2] + (target.count or 1) then return end
+  if target.uri ~= nil then return { uri = target.uri } end
   local line = vim.api.nvim_buf_get_lines(self.bufnr, row, row + 1, false)[1]
   if target.parse == 'diff' then
     -- removed lines are numbered in the old file, so they open at the next line of the new one

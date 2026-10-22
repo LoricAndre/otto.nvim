@@ -22,6 +22,8 @@ local M = {}
 --- Opens the location in the previous window, or this one when there's no other
 --- @param target otto.Target
 function M.open_target(target)
+  -- sessions open in this window, so that <C-o> goes back
+  if target.uri ~= nil then return vim.cmd.edit(target.uri) end
   local previous = vim.fn.win_getid(vim.fn.winnr('#'))
   if previous ~= 0 and previous ~= vim.api.nvim_get_current_win() then vim.api.nvim_set_current_win(previous) end
   vim.cmd.edit(vim.fn.fnameescape(target.path))
@@ -187,6 +189,12 @@ M.builtin = {
     description = 'Open the output, file or code block under the cursor in a split',
     palette = false,
     run = function(session) cursor.open(session) end,
+  },
+  {
+    name = 'stop_here',
+    description = 'Stop the subagent or command under the cursor',
+    palette = false,
+    run = function(session) cursor.stop(session) end,
   },
   {
     name = 'terminal_here',

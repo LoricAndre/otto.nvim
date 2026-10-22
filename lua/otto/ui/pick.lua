@@ -181,6 +181,7 @@ function M.sessions()
   --- @field title string
   --- @field session? otto.Session When it's open
   --- @field info? otto.SessionInfo When it's saved
+  --- @field child? boolean Whether it's a subagent's, below its parent
 
   local function items()
     local list, by_uri = {}, {} --- @type otto.SessionItem[], table<string, otto.SessionItem>
@@ -188,10 +189,22 @@ function M.sessions()
     table.sort(infos, function(a, b) return a.lastused > b.lastused end)
     for _, buf in ipairs(infos) do
       local session = sessions[buf.bufnr]
-      if session ~= nil then
+      -- subagents' sessions go below their parent's
+      if session ~= nil and session.state.parent == nil then
         local item = { uri = buf.name, provider = session.provider.name, title = session.state.name, session = session }
         table.insert(list, item)
         by_uri[buf.name] = item
+      end
+    end
+    for i = #list, 1, -1 do
+      local parent = list[i].uri
+      for _, buf in ipairs(infos) do
+        local child = sessions[buf.bufnr]
+        if child and child.state.parent == parent then
+          local item = { uri = buf.name, provider = child.provider.name, title = child.state.name, session = child }
+          item.child = true
+          table.insert(list, i + 1, item)
+        end
       end
     end
     for _, info in ipairs(providers.list()) do
@@ -212,8 +225,13 @@ function M.sessions()
     -- the ids of Claude Code and Codex are UUIDs, which only need their end to be told apart
     local short = item.provider == 'pi' and id or id:sub(-8)
     local chunks = { { providers.get(item.provider).icon, 'OttoWinbarIcon' }, { item.title or id } }
+    if item.child then chunks = { { '    ' }, { item.title or id } } end
     local notes = {}
     local state = item.session and item.session.state
+    local subagents = state and #vim.tbl_filter(function(other) return other.kind == 'subagent' end, state.background)
+    if subagents and subagents > 0 then
+      table.insert(notes, { ('%d subagent%s  '):format(subagents, subagents == 1 and '' or 's'), 'OttoStatus' })
+    end
     if state and state.working then
       local elapsed = math.floor((vim.uv.now() - state.since) / 1000)
       table.insert(notes, { state.working .. ' ' .. require('otto.render.tools').duration(elapsed), 'OttoStatus' })

@@ -28,6 +28,8 @@
 --- @field commands async fun(self: otto.Handle): otto.Command[] The agent's own
 --- @field fork_points? async fun(self: otto.Handle): { id: string, text: string }[] Prompts to fork from
 --- @field fork? async fun(self: otto.Handle, id: string): { id: string, text: string }? The new session's id
+--- @field stop_task? async fun(self: otto.Handle, id: string) Stops a subagent or command in the background
+--- @field read_only? boolean Whether it can't be prompted, like a subagent's session
 --- @field close fun(self: otto.Handle)
 
 --- @class otto.AskOpts

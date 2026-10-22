@@ -50,6 +50,8 @@ local summaries = {
   write = 'wrote %d file',
   web_search = 'ran %d web search',
   fetch = 'read %d web page',
+  agent = 'started %d subagent',
+  message = 'sent %d message',
 }
 
 --- @param tools string[] of the group
@@ -82,6 +84,8 @@ local needs = {
   bash = { command = 'string' },
   web_search = { query = 'string' },
   fetch = { urls = 'table' },
+  agent = { description = 'string' },
+  message = { to = 'string' },
 }
 local types = { pattern = 'string', description = 'string', offset = 'number', limit = 'number' }
 
@@ -113,6 +117,17 @@ function M.header(tool, args)
     local header = { { '$', 'OttoToolName' }, { ' ' .. first_line(vim.trim(args.command)), filetype = 'bash' } }
     local more = #vim.split(vim.trim(args.command), '\n') - 1
     if more > 0 then table.insert(header, { ('  +%d lines'):format(more), 'OttoToolDetail' }) end
+    return header
+  end
+  if tool == 'agent' then
+    local header = { { 'agent', 'OttoToolName' }, { ' ' .. first_line(args.description), 'OttoToolArg' } }
+    if type(args.type) == 'string' then table.insert(header, { '  ' .. args.type, 'OttoToolDetail' }) end
+    return header
+  end
+  if tool == 'message' then
+    local header = { { 'to', 'OttoToolName' }, { ' ' .. first_line(args.to), 'OttoToolArg' } }
+    local preview = args.summary or args.text
+    if type(preview) == 'string' then table.insert(header, { '  ' .. first_line(preview), 'OttoToolDetail' }) end
     return header
   end
   if tool == 'web_search' then

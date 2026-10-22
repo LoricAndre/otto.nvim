@@ -41,7 +41,7 @@ function Log:push(fields, at)
     self.answered = false
     self.interrupted = false
   end
-  if fields.type ~= 'user' then self.worked = true end
+  if fields.type ~= 'user' and fields.type ~= 'message' then self.worked = true end
   self.at = fields.at
   self.emit(fields)
 end
@@ -67,10 +67,15 @@ function Log:finish() self:settle() end
 --- The turn ends aborted, like when the user interrupts the agent
 function Log:interrupt() self.interrupted = true end
 
+--- Something that the agent reads like a prompt, which ends the turn when the agent answered
+function Log:prompted()
+  if self.answered or self.interrupted then self:settle() end
+end
+
 --- @param text string
 --- @param at? integer
 function Log:user(text, at)
-  if self.answered or self.interrupted then self:settle() end
+  self:prompted()
   self:push({ type = 'user', text = text }, at)
   self.answered = false
 end
@@ -100,6 +105,16 @@ function Log:tool_result(result, at)
   self.answered = false
 end
 
+--- A message from another agent, which the agent reads like a prompt
+--- @param message table The fields of `otto.Event` for messages
+--- @param at? integer
+function Log:message(message, at)
+  self:prompted()
+  message.type = 'message'
+  self:push(message, at)
+  self.answered = false
+end
+
 --- @param message string
 --- @param at? integer
 function Log:error(message, at)
@@ -117,7 +132,7 @@ function Log:compaction(compaction, at)
 end
 
 --- What the session runs with, which the history has too
---- @param info { name?: string, model?: string, effort?: string, context?: integer, cost?: number }
+--- @param info { name?: string, model?: string, effort?: string, context?: integer, cost?: number, parent?: string }
 function Log:info(info)
   info.type = 'info'
   self.on_status(info)
