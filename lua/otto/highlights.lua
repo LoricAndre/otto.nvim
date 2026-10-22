@@ -7,7 +7,6 @@ local links = {
   OttoToolName = '@markup.strong', -- like "read" or "$"
   OttoToolArg = 'String', -- the path, command, pattern or query
   OttoToolDetail = 'Comment', -- like "(5 lines)"
-  OttoToolDone = 'DiagnosticOk',
   OttoToolFailed = 'DiagnosticError', -- also counts the failed tools in summaries
   OttoToolSummary = 'Comment', -- like "read 2 files, ran 1 command"
   OttoPath = 'Directory', -- of locations in tool output, like `path:12:` from grep

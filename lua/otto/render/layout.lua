@@ -231,13 +231,11 @@ function Layout:tool_result(result)
     table.insert(header, { '  ' .. tools.duration(seconds), 'OttoStatusTime' })
   end
   local code = result.exit_code
-  -- commands only say how they ended when they fail
+  -- tools only say how they ended when they fail
   if tool == 'bash' and (code or 0) ~= 0 then
     table.insert(header, { '  exit ' .. code, 'OttoToolFailed' })
   elseif not result.ok then
     vim.list_extend(header, { { '  failed', 'OttoToolFailed' }, { ' ' .. (lines[1] or ''), 'OttoToolDetail' } })
-  elseif tool ~= 'bash' then
-    table.insert(header, { '  done', 'OttoToolDone' })
   end
   local count = tool == 'fetch' and #args.urls or 1
   local sections = #lines > 0 and { section } or {}
