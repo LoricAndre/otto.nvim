@@ -1,9 +1,9 @@
--- A process that speaks JSONL on stdin and stdout, like the agents' RPC modes, with requests that it responds to
+-- JSONL transport on stdin and stdout for agent RPC
 
 local util = require('otto.util')
 
 --- @class otto.Proc
---- @field name string Shown in errors
+--- @field name string
 --- @field system vim.SystemObj
 --- @field closed boolean
 --- @field stderr? string

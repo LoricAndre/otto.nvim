@@ -7,19 +7,19 @@ local cmd --- @type fun(dispatchers: vim.lsp.rpc.Dispatchers, config: vim.lsp.Cl
 --- @return lsp.CompletionList?
 local function complete(params)
   local util = require('blink.lib.lsp').util
-  local session = require('otto.session').sessions[util.bufnr(params.textDocument)]
-  if session == nil then return end
+  local view = require('otto.view').views[util.bufnr(params.textDocument)]
+  if view == nil then return end
 
   local row, col = util.position(params.position)
-  local before = vim.api.nvim_buf_get_lines(session.bufnr, row, row + 1, false)[1]:sub(1, col)
+  local before = vim.api.nvim_buf_get_lines(view.bufnr, row, row + 1, false)[1]:sub(1, col)
   local token = before:match('%S*$')
   local kinds = vim.lsp.protocol.CompletionItemKind
 
   local items = {}
-  local prompt_row = vim.api.nvim_buf_get_mark(session.bufnr, ':')[1] - 1
+  local prompt_row = vim.api.nvim_buf_get_mark(view.bufnr, ':')[1] - 1
   -- the agent's own commands, since otto's are in the palette. Like submitting, which trims the prompt
   if vim.startswith(token, '/') and vim.trim(before) == token and row == prompt_row then
-    for _, command in ipairs(require('otto.ui.commands').agent_commands(session)) do
+    for _, command in ipairs(require('otto.ui.commands').agent_commands(view)) do
       local item = { label = command.name, kind = kinds.Function, detail = command.args }
       item.documentation = command.description
       table.insert(items, item)
@@ -32,18 +32,11 @@ local function complete(params)
   end
 
   -- replace the token after its trigger character, which may contain `:` or `/`
-  local range = util.range(session.bufnr, row, col - #token + 1, row, col)
+  local range = util.range(view.bufnr, row, col - #token + 1, row, col)
   for _, item in ipairs(items) do
     item.textEdit = util.text_edit(range, item.label)
   end
   return { isIncomplete = false, items = items }
-end
-
---- @param params lsp.CodeActionParams
---- @return lsp.CodeAction[]?
-local function code_actions(params)
-  local bufnr = require('blink.lib.lsp').util.bufnr(params.textDocument)
-  if bufnr ~= nil then return require('otto.actions').code_actions(bufnr, params.range) end
 end
 
 vim.lsp.config('otto', {
@@ -52,16 +45,15 @@ vim.lsp.config('otto', {
     cmd = cmd
       or require('blink.lib.lsp').server({
         name = 'otto',
-        capabilities = { codeActionProvider = true, completionProvider = { triggerCharacters = { '/', '@' } } },
-        handlers = { ['textDocument/completion'] = complete, ['textDocument/codeAction'] = code_actions },
+        capabilities = { completionProvider = { triggerCharacters = { '/', '@' } } },
+        handlers = { ['textDocument/completion'] = complete },
       })
     return cmd(dispatchers, config)
   end,
 })
-vim.lsp.enable('otto')
 
---- Attaches to the session's prompt buffer, which `vim.lsp.enable` skips
---- @param session otto.Session
-function M.attach(session) vim.lsp.start(vim.lsp.config.otto, { bufnr = session.bufnr }) end
+--- Attaches to the session's prompt buffer
+--- @param view otto.View
+function M.attach(view) vim.lsp.start(vim.lsp.config.otto, { bufnr = view.bufnr }) end
 
 return M

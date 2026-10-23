@@ -1,30 +1,23 @@
 -- What providers emit: the log, which the transcript shows, and which is the same whether it's read from a session
--- file or streamed live, and the status, which is everything else, like what the agent is doing. See ARCHITECTURE.md
+-- file or streamed live, changes to the state, which is everything else, like what the agent is doing, and requests
+-- for the user to answer. Events don't change once they're emitted, since the session keeps them. See ARCHITECTURE.md
 
 local M = {}
 
 --- @class otto.Event
---- @field type 'user' | 'text' | 'tool_call' | 'tool_result' | 'message' | 'compaction' | 'error' | 'turn_end'
+--- @field type 'user' | 'text' | 'tool_call' | 'tool_result' | 'compaction' | 'error' | 'turn_end'
 --- @field at integer Milliseconds since the epoch, from the provider's record when it has one
 --- user, text
 --- @field text? string
 --- tool_call, tool_result
 --- @field id? string
---- @field tool? string `read`, `edit`, `write`, `bash`, `grep`, `find`, `ls`, `web_search`, `fetch`, `agent`, `message`, or
---- the agent's own
+--- @field tool? string `read`, `edit`, `write`, `bash`, `grep`, `find`, `ls`, `web_search`, `fetch`, `agent`, or the
+--- agent's own
 --- @field args? table See `otto.ToolArgs`
 --- @field ok? boolean
 --- @field output? string
 --- @field exit_code? integer Of commands
 --- @field diff? otto.DiffLine[] Of edits
---- @field child? string Buffer name of the session that a subagent tool started, like claude://<session>/<agent>
---- message, from another agent, like a subagent handing back its report. The agent's own are `message` tools
---- @field from? string Name of the agent
---- @field uri? string Buffer name of its session
---- @field kind? 'spawn' | 'handback' | 'done' | 'failed' | 'stopped' Of messages that start or end a subagent
---- @field tokens? integer That the subagent used, when it ended
---- @field tools? integer That the subagent called, when it ended
---- @field seconds? integer That the subagent ran for, when it ended
 --- compaction
 --- @field summary? string
 --- @field before? integer Tokens in the context
@@ -48,35 +41,15 @@ local M = {}
 --- @field urls? string[] fetch
 --- @field prompt? string agent
 --- @field type? string agent: its kind, like "general-purpose"
---- @field background? boolean agent, bash
---- @field to? string message: name of the agent
---- @field text? string message
---- @field summary? string message
-
---- @class otto.Background A subagent or command that the agent runs in the background, or a subagent that it waits for
---- @field id string
---- @field kind 'subagent' | 'command'
---- @field name string
---- @field call_id? string Of the tool call that started it
---- @field since integer When it started, in milliseconds of the event loop
---- @field activity? string Like the subagent's last tool
---- @field tools? integer
---- @field tokens? integer
---- @field uri? string Buffer name of a subagent's session
+--- @field background? boolean agent, bash: whether it ends as a second result
 
 --- @class otto.DiffLine
 --- @field sign '+' | '-' | ' ' | nil Nothing for the gaps between hunks
 --- @field lnum? integer In the new file for added lines and context, in the old one for removed lines
 --- @field text string
 
---- @class otto.Status
---- @field type 'working' | 'queue' | 'info' | 'background' | 'request'
---- working
---- @field state? 'working' | 'thinking' | 'compacting' Nothing when the agent stopped
---- queue: prompts that the agent hasn't read yet, including the one that was just sent
---- @field steering? string[]
---- @field follow_up? string[]
---- info: what the session runs with, from its history or its process
+--- @class otto.StatePatch What changed of what the session runs with and what the agent is doing, which the session
+--- merges into its state. Lists are replaced whole
 --- @field id? string Of a session that the agent created
 --- @field name? string
 --- @field model? string
@@ -84,15 +57,33 @@ local M = {}
 --- @field window? integer Size of the context window
 --- @field context? integer Tokens in the context, as of the last answer or compaction
 --- @field cost? number Dollars, for the whole session
---- @field parent? string Buffer name of the session that started this one, of subagents
---- background: what the agent runs beside the conversation, replaced whole
---- @field background? otto.Background[]
---- request
---- @field kind? 'select' | 'input' | 'confirm'
---- @field prompt? string
+--- @field working? 'working' | 'thinking' | 'compacting' | false False once the agent stopped
+--- @field queue? otto.Queued[] Prompts that the agent hasn't read yet, including the one that was just sent
+
+--- @class otto.Queued
+--- @field text string
+--- @field follow_up boolean Whether it waits for the agent to finish, instead of steering
+
+--- @class otto.Request What the agent waits for the user to answer, like a permission
+--- @field kind 'select' | 'input' | 'confirm'
+--- @field prompt string
 --- @field items? string[] select
 --- @field default? string input
---- @field respond? fun(value: any) With nil when cancelled
+--- @field respond fun(value: any) With nil when cancelled
+
+--- @param steering? string[]
+--- @param follow_up? string[]
+--- @return otto.Queued[]
+function M.queued(steering, follow_up)
+  local queue = {}
+  for _, text in ipairs(steering or {}) do
+    table.insert(queue, { text = text, follow_up = false })
+  end
+  for _, text in ipairs(follow_up or {}) do
+    table.insert(queue, { text = text, follow_up = true })
+  end
+  return queue
+end
 
 --- @return integer milliseconds since the epoch
 function M.now()

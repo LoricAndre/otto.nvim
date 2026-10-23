@@ -1,19 +1,16 @@
 -- Around the prompt: the tools that are running and what the agent is doing, for how long, at the end of the
--- transcript, the subagents and commands that it runs in the background, and the prompts that it hasn't read yet,
--- above the separator above the prompt
+-- transcript, and the prompts that it hasn't read yet, above the separator above the prompt
 
 local tools = require('otto.render.tools')
 
 local ns = vim.api.nvim_create_namespace('otto.prompt')
 local slow = 3000 -- milliseconds before running tools show for how long they've run, since most finish sooner
-local max_lane = 5 -- subagents and commands in the background that show, before the rest are counted
-local max_name = 40 -- width of their names
 local labels = { working = 'Working', thinking = 'Thinking', compacting = 'Compacting' }
 
 --- @class otto.PromptArea
 --- @field bufnr integer
---- @field state otto.State
---- @field layout otto.Layout With the tools that are running
+--- @field session otto.Session With the tools that are running
+--- @field layout otto.Layout Which spaces the area like the next block
 --- @field started table<string, integer> When the tools started, in milliseconds of the event loop
 --- @field timer? uv.uv_timer_t Counting the time while the agent works
 local Area = {}
@@ -22,11 +19,11 @@ Area.__index = Area
 local M = {}
 
 --- @param bufnr integer
---- @param state otto.State
+--- @param session otto.Session
 --- @param layout otto.Layout
 --- @return otto.PromptArea
-function M.new(bufnr, state, layout)
-  return setmetatable({ bufnr = bufnr, state = state, layout = layout, started = {} }, Area)
+function M.new(bufnr, session, layout)
+  return setmetatable({ bufnr = bufnr, session = session, layout = layout, started = {} }, Area)
 end
 
 --- Where the window shows the prompt, which the separator isn't part of
@@ -87,40 +84,23 @@ function M.scrolled(win)
   M.watch(win)
 end
 
---- @param item otto.Background
---- @return string like "read codex.lua · 21 tools"
-local function activity_of(item)
-  local parts = {}
-  if item.activity then table.insert(parts, item.activity) end
-  if item.tools then table.insert(parts, item.tools .. (item.tools == 1 and ' tool' or ' tools')) end
-  return table.concat(parts, ' · ')
-end
-
 --- Draws the area again, after the transcript or the state changed
 function Area:draw()
   local bufnr = self.bufnr
-  local state = self.state
+  local state = self.session.state
   local row = vim.api.nvim_buf_get_mark(bufnr, ':')[1] - 1
   vim.api.nvim_buf_clear_namespace(bufnr, ns, 0, -1)
 
   local lines = {}
   local started = {}
-  local background = {} --- @type table<string, otto.Background> by call
-  for _, item in ipairs(state.background) do
-    if item.call_id then background[item.call_id] = item end
-  end
-  local shown = {}
-  for _, running in ipairs(state.working and self.layout.running or {}) do
+  for _, running in ipairs(state.working and self.session.running or {}) do
     started[running.id] = self.started[running.id] or vim.uv.now()
-    shown[running.id] = true
     local line = { { '  ' } } -- nested in a group
-    for _, chunk in ipairs(tools.header(running.tool, running.args)) do
+    local call = tools.call(running.tool, running.args)
+    for _, chunk in ipairs(tools.header(call.tool, call.args)) do
       -- without their filetype, which virtual text doesn't take
       table.insert(line, { chunk[1], chunk[2] })
     end
-    local item = background[running.id]
-    local activity = item and activity_of(item) or ''
-    if activity ~= '' then table.insert(line, { '  ' .. activity, 'OttoToolDetail' }) end
     local elapsed = vim.uv.now() - started[running.id]
     if elapsed >= slow then
       table.insert(line, { '  ' .. tools.duration(math.floor(elapsed / 1000)), 'OttoStatusTime' })
@@ -128,28 +108,6 @@ function Area:draw()
     table.insert(lines, line)
   end
   self.started = started
-  -- what runs beside the conversation, which outlives the turn
-  local lane = vim.tbl_filter(function(item) return not shown[item.call_id or ''] end, state.background)
-  local width = 0
-  for _, item in ipairs(lane) do
-    width = math.min(math.max(width, vim.api.nvim_strwidth(item.name)), max_name)
-  end
-  for i, item in ipairs(lane) do
-    if i > max_lane then
-      table.insert(lines, { { ('  +%d more'):format(#lane - max_lane), 'OttoToolDetail' } })
-      break
-    end
-    local name = vim.fn.strcharpart(item.name, 0, max_name)
-    local line = {
-      { '  ' },
-      { item.kind == 'subagent' and 'agent' or '$', 'OttoToolName' },
-      { ' ' .. name .. (' '):rep(width - vim.api.nvim_strwidth(name)), 'OttoToolArg' },
-    }
-    local activity = activity_of(item)
-    if activity ~= '' then table.insert(line, { '  ' .. activity, 'OttoToolDetail' }) end
-    table.insert(line, { '  ' .. tools.duration(math.floor((vim.uv.now() - item.since) / 1000)), 'OttoStatusTime' })
-    table.insert(lines, line)
-  end
   -- like the tools will be once they finish
   local tail = self.layout.tail
   if #lines > 0 and tail ~= 'tool' and tail ~= 'text' then table.insert(lines, 1, {}) end
@@ -177,7 +135,7 @@ end
 
 --- Counts the time while the agent works, and draws the area again
 function Area:update()
-  local running = self.state.working ~= nil or #self.state.background > 0
+  local running = self.session.state.working ~= nil
   if running and self.timer == nil then
     self.timer = vim.uv.new_timer()
     self.timer:start(

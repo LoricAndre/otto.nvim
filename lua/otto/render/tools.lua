@@ -50,8 +50,7 @@ local summaries = {
   write = 'wrote %d file',
   web_search = 'ran %d web search',
   fetch = 'read %d web page',
-  agent = 'started %d subagent',
-  message = 'sent %d message',
+  agent = 'ran %d subagent',
 }
 
 --- @param tools string[] of the group
@@ -85,7 +84,6 @@ local needs = {
   web_search = { query = 'string' },
   fetch = { urls = 'table' },
   agent = { description = 'string' },
-  message = { to = 'string' },
 }
 local types = { pattern = 'string', description = 'string', offset = 'number', limit = 'number' }
 
@@ -106,6 +104,16 @@ function M.valid(tool, args)
 end
 
 --- @param tool string
+--- @param args? table
+--- @return { tool: string, args: table } as it shows, like the agent's own tools when the args aren't what the tool
+--- takes, so that it shows what the agent sent
+function M.call(tool, args)
+  args = args or {}
+  if M.valid(tool, args) then return { tool = tool, args = args } end
+  return { tool = tool .. '?', args = { description = vim.json.encode(args) } }
+end
+
+--- @param tool string
 --- @param args table
 --- @return otto.Chunks like "read lua/otto/init.lua:10-20"
 function M.header(tool, args)
@@ -122,12 +130,6 @@ function M.header(tool, args)
   if tool == 'agent' then
     local header = { { 'agent', 'OttoToolName' }, { ' ' .. first_line(args.description), 'OttoToolArg' } }
     if type(args.type) == 'string' then table.insert(header, { '  ' .. args.type, 'OttoToolDetail' }) end
-    return header
-  end
-  if tool == 'message' then
-    local header = { { 'to', 'OttoToolName' }, { ' ' .. first_line(args.to), 'OttoToolArg' } }
-    local preview = args.summary or args.text
-    if type(preview) == 'string' then table.insert(header, { '  ' .. first_line(preview), 'OttoToolDetail' }) end
     return header
   end
   if tool == 'web_search' then
@@ -170,7 +172,8 @@ function M.output_of(tool, args, text)
     section.first = args.offset or 1
     return section
   end
-  if tool == 'fetch' then return M.output(lines, 'markdown') end
+  -- like a subagent's report
+  if tool == 'fetch' or tool == 'agent' then return M.output(lines, 'markdown') end
   local section = M.output(lines)
   section.locations = tool == 'grep'
   if tool ~= 'bash' then return section end

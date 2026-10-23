@@ -1,5 +1,5 @@
--- The prompts of a session: jumping to them, and rewinding or forking the session from them, for agents that can.
--- Rewinding forks too, and switches the buffer to the fork, so the session it left stays saved
+-- The prompts of a session: jumping to them, and rewinding the session to them, for agents that can. Rewinding forks
+-- the session, and switches the buffer to the fork, so the session it left stays saved
 
 local history = require('otto.ui.history')
 local pick = require('otto.ui.pick')
@@ -13,11 +13,11 @@ local M = {}
 
 --- The prompts of the transcript, with the ids that the agent forks from, which only match by their text
 --- @async
---- @param session otto.Session
+--- @param view otto.View
 --- @return otto.Prompt[] newest first
-function M.list(session)
-  local prompts = session.buffer:prompts() --[[@as otto.Prompt[] ]]
-  local points = session.handle.fork_points and session.handle:fork_points() or {}
+function M.list(view)
+  local prompts = view.buffer:prompts() --[[@as otto.Prompt[] ]]
+  local points = view.session.handle.fork_points and view.session.handle:fork_points() or {}
   local next_point = 1
   for i, prompt in ipairs(prompts) do
     prompt.index = i
@@ -31,72 +31,36 @@ function M.list(session)
   return vim.fn.reverse(prompts)
 end
 
---- @param session otto.Session
---- @param prompt otto.Prompt
---- @return boolean
-local function can_fork(session, prompt)
-  if session.handle.fork == nil then
-    util.notify(session.provider.name .. " can't rewind or fork sessions", vim.log.levels.WARN)
-    return false
-  end
-  if prompt.id == nil then util.notify("the agent can't fork from this prompt", vim.log.levels.WARN) end
-  return prompt.id ~= nil
-end
-
 --- Switches the buffer to a fork of the session from before the prompt, with the prompt in the prompt to edit
 --- @async
---- @param session otto.Session
+--- @param view otto.View
 --- @param prompt otto.Prompt
-function M.rewind(session, prompt)
-  if not can_fork(session, prompt) then return end
-  local fork = session.handle:fork(prompt.id)
+function M.rewind(view, prompt)
+  if prompt.id == nil then return util.notify("the agent can't rewind to this prompt", vim.log.levels.WARN) end
+  local fork = view.session.handle:fork(prompt.id)
   if fork == nil then return end
-  local sessions = require('otto.session')
-  sessions.restart(session.bufnr, fork.id)
-  history.insert(sessions.sessions[session.bufnr], { text = fork.text })
-end
-
---- Opens a fork of the session from before the prompt in the window, with the prompt in the prompt to edit. The
---- buffer keeps the session
---- @async
---- @param session otto.Session
---- @param prompt otto.Prompt
-function M.fork(session, prompt)
-  if not can_fork(session, prompt) then return end
-  local fork = session.handle:fork(prompt.id)
-  if fork == nil then return end
-  local sessions = require('otto.session')
-  -- like pi, whose process switches to the fork
-  if fork.switched then sessions.restart(session.bufnr) end
-  vim.cmd.edit(session.provider.name .. '://' .. fork.id)
-  history.insert(sessions.sessions[vim.api.nvim_get_current_buf()], { text = fork.text })
-end
-
---- Puts the prompt into the prompt, keeping what it held like the history does
---- @param session otto.Session
---- @param prompt otto.TranscriptPrompt
-function M.edit(session, prompt)
-  history.insert(session, { text = prompt.text })
-  if vim.api.nvim_get_current_buf() == session.bufnr then vim.cmd.startinsert({ bang = true }) end
+  local views = require('otto.view')
+  views.restart(view.bufnr, fork.id)
+  history.insert(views.views[view.bufnr], { text = fork.text })
 end
 
 --- Picks a prompt of the session, which the transcript scrolls to
---- @param session otto.Session
---- @param mode 'jump' | 'rewind' | 'fork' What accepting does
-function M.pick(session, mode)
+--- @param view otto.View
+--- @param rewind? boolean Whether accepting rewinds to it, instead of jumping to it
+function M.pick(view, rewind)
   util.run(function()
-    local prompts = M.list(session)
+    local prompts = M.list(view)
     if #prompts == 0 then return util.notify('no prompts yet', vim.log.levels.WARN) end
     -- the current one, of the windows that show the session
-    local win = vim.api.nvim_get_current_buf() == session.bufnr and vim.api.nvim_get_current_win()
-      or vim.fn.bufwinid(session.bufnr)
-    local view = win ~= -1 and vim.api.nvim_win_call(win, vim.fn.winsaveview)
+    local win = vim.api.nvim_get_current_buf() == view.bufnr and vim.api.nvim_get_current_win()
+      or vim.fn.bufwinid(view.bufnr)
+    local saved = win ~= -1 and vim.api.nvim_win_call(win, vim.fn.winsaveview)
 
     --- @param prompt otto.Prompt?
     local function preview(prompt)
       if win == -1 or not vim.api.nvim_win_is_valid(win) then return end
       vim.api.nvim_win_call(win, function()
-        if prompt == nil then return vim.fn.winrestview(view) end
+        if prompt == nil then return vim.fn.winrestview(saved) end
         vim.api.nvim_win_set_cursor(win, { prompt.row + 1, 0 })
         vim.cmd('normal! zt')
       end)
@@ -110,41 +74,19 @@ function M.pick(session, mode)
       return chunks, { { tostring(prompt.index), 'Comment' } }
     end
 
-    --- @param fn async fun(session: otto.Session, prompt: otto.Prompt)
-    local function act(fn)
-      return function(prompt, picker)
-        if prompt ~= nil then
-          picker.close(function()
-            util.run(function() fn(session, prompt) end)
-          end)
-        end
-      end
+    --- @param prompt otto.Prompt
+    local function accept(prompt)
+      if not rewind then return vim.api.nvim_win_set_cursor(win, { prompt.row + 1, 0 }) end
+      util.run(function() M.rewind(view, prompt) end)
     end
 
-    local accept = {
-      jump = function(prompt) vim.api.nvim_win_set_cursor(win, { prompt.row + 1, 0 }) end,
-      rewind = function(prompt)
-        util.run(function() M.rewind(session, prompt) end)
-      end,
-      fork = function(prompt)
-        util.run(function() M.fork(session, prompt) end)
-      end,
-    }
-    local prompt = { jump = 'Prompt: ', rewind = 'Rewind to: ', fork = 'Fork from: ' }
-
     pick.select({
-      prompt = prompt[mode],
-      items = function() return prompts end,
+      prompt = rewind and 'Rewind to: ' or 'Prompt: ',
+      items = prompts,
       format = format,
-      text = function(item) return item.text end,
+      text = function(prompt) return prompt.text end,
       preview = preview,
-      on_accept = accept[mode],
-      actions = {
-        { key = '<M-r>', desc = mode ~= 'rewind' and 'rewind' or nil, run = act(M.rewind) },
-        { key = '<M-f>', desc = mode ~= 'fork' and 'fork' or nil, run = act(M.fork) },
-        { key = '<M-e>', desc = 'edit', run = act(M.edit) },
-        { key = '<M-y>', desc = 'yank', run = act(function(_, item) vim.fn.setreg(vim.v.register, item.text) end) },
-      },
+      on_accept = accept,
     })
   end)
 end

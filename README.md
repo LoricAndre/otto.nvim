@@ -13,32 +13,28 @@ vim.pack.add({
 })
 
 vim.keymap.set('n', '<leader>af', '<cmd>Otto<cr>', { desc = 'Find session' })
+vim.keymap.set('n', '<leader>ar', '<cmd>Otto resume<cr>', { desc = 'Resume session' })
+vim.keymap.set({ 'n', 'x' }, '<leader>as', ':Otto send<cr>', { desc = 'Send to agent' })
+
 vim.keymap.set('n', '<leader>ap', '<cmd>Otto pi<cr>', { desc = 'New Pi session' })
 vim.keymap.set('n', '<leader>aP', ':Otto pi ', { desc = 'New named Pi session' })
 vim.keymap.set('n', '<leader>ac', '<cmd>Otto claude<cr>', { desc = 'New Claude session' })
 vim.keymap.set('n', '<leader>aC', ':Otto claude ', { desc = 'New named Claude session' })
 vim.keymap.set('n', '<leader>ax', '<cmd>Otto codex<cr>', { desc = 'New Codex session' })
 vim.keymap.set('n', '<leader>aX', ':Otto codex ', { desc = 'New named Codex session' })
-vim.keymap.set('n', '<leader>ar', '<cmd>Otto resume<cr>', { desc = 'Resume session' })
-vim.keymap.set({ 'n', 'x' }, '<leader>as', ':Otto send<cr>', { desc = 'Send to agent' })
 ```
 
-Pickers use [minibuffer.nvim](https://github.com/saghen/minibuffer.nvim) when it's set up, and `vim.ui.select` otherwise.
+Pickers use [minibuffer.nvim](https://github.com/saghen/minibuffer.nvim) when it's set up, and `vim.ui.select` otherwise. For below, I'm assuming your `<localleader>` is `\` (default). See `:h maplocalleader`.
 
 | Key | Action |
 | --- | --- |
-| `<C-s>`, `<CR>` (normal) | Submit, steering while the agent works |
-| `<M-CR>` | Submit as a follow-up |
-| `<C-c>` | Take back queued prompts, or abort |
-| `<M-p>`, `<M-n>` | Older and newer prompts of this folder, keeping your draft |
-| `<M-r>` | Pick from the history (`<M-s>` all folders, `<M-d>` delete) |
+| `<C-s>`, `<CR>` (normal) | Submit |
+| `<M-CR>` | Submit as follow-up |
+| `<C-c>` | Stop, taking back queued prompts |
+| `<M-p>`, `<M-n>` | Take back queued prompts one by one, then prompt history |
+| `<M-r>` | Prompt history picker |
 | `<M-x>` | Commands |
-| `\p` | Jump to a prompt (`<M-r>` rewind, `<M-f>` fork, `<M-e>` edit) |
-| `\r`, `\f` | Rewind to, or fork from, the prompt under the cursor |
-| `\e` | Edit the prompt under the cursor |
-| `\y`, `\o` | Yank, or open in a split, the prompt, tool output or code block under the cursor |
-| `\t` | Run the command under the cursor in a terminal |
-| `\k` | Stop the subagent or command under the cursor |
+| `\p` | Jump to a prompt |
 | `\q` | Edits of the session to quickfix |
 
 ## Configuration
@@ -48,8 +44,6 @@ Otto works without `setup()`. These are the defaults, which `setup()` merges int
 ```lua
 require('otto').setup({
   default_provider = 'pi',
-  ask = { provider = 'pi' }, -- one-shot prompts, like naming sessions
-  cleanup_delay = 10000, -- ms before an empty, hidden session's buffer is deleted
   -- command, command by mode, or false to disable. `keymaps = false` disables them all
   keymaps = {
     ['<CR>'] = { n = 'open', i = 'newline' },

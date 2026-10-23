@@ -3,8 +3,6 @@
 
 --- @class (exact) otto.ConfigStrict
 --- @field default_provider 'pi' | 'claude' | 'codex' Of `:Otto` and new sessions
---- @field ask { provider: 'pi' } Answers one-shot prompts, like naming sessions
---- @field cleanup_delay integer Milliseconds before an empty, hidden session's buffer is deleted
 --- @field keymaps table<string, otto.Keymap> | false Of the session's buffer, false for none
 --- @field providers { pi: otto.ProviderConfig, claude: otto.ClaudeConfig, codex: otto.ProviderConfig }
 
@@ -22,8 +20,6 @@
 
 --- @class (exact) otto.Config : otto.ConfigStrict, {}
 --- @field default_provider? 'pi' | 'claude' | 'codex'
---- @field ask? { provider?: 'pi' }
---- @field cleanup_delay? integer
 --- @field keymaps? table<string, otto.Keymap> | false
 --- @field providers? { pi?: otto.ProviderConfigPartial, claude?: otto.ClaudeConfigPartial, codex?: otto.ProviderConfigPartial }
 
@@ -46,7 +42,6 @@ local keymaps = {
   ['<M-CR>'] = 'follow_up',
   ['<C-w>'] = 'delete_word',
   ['<C-c>'] = 'abort',
-  ['<C-CR>'] = 'send_now',
   [']]'] = 'next_prompt',
   ['[['] = 'previous_prompt',
   ['<M-p>'] = 'history_older',
@@ -57,13 +52,6 @@ local keymaps = {
   ['<S-Tab>'] = 'effort',
   ['<localleader>q'] = 'edits',
   ['<localleader>p'] = 'prompts',
-  ['<localleader>r'] = 'rewind_here',
-  ['<localleader>f'] = 'fork_here',
-  ['<localleader>e'] = 'edit_here',
-  ['<localleader>y'] = 'yank_here',
-  ['<localleader>o'] = 'open_here',
-  ['<localleader>t'] = 'terminal_here',
-  ['<localleader>k'] = 'stop_here',
 }
 
 --- Spells keys one way, like <C-S> for <c-s>, so that the user's replace the defaults. Leaders stay, since they may be
@@ -129,8 +117,6 @@ local function schema()
 
   return {
     default_provider = { 'pi', types.enum({ 'pi', 'claude', 'codex' }) },
-    ask = { provider = { 'pi', types.enum({ 'pi' }) } },
-    cleanup_delay = { 10000, 'number' },
     keymaps = { normalize(keymaps), { types.enum({ false }), keymaps_type } },
     providers = {
       pi = provider('pi'),

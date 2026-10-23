@@ -26,14 +26,14 @@ local M = {}
 --- @type otto.HistoryEntry[] Oldest first, which stay the same tables, since edits are keyed by them
 local entries = {}
 local offset = 0 -- bytes of the file read so far
-local inode --- @type integer? Of the file read, which `forget` replaces
 
 --- Reads what other instances and sessions added since the last read
 local function load()
   local stat = vim.uv.fs_stat(path)
-  if stat == nil or stat.size == offset and stat.ino == inode then return end
-  if stat.size < offset or stat.ino ~= inode then
-    entries, offset, inode = {}, 0, stat.ino
+  if stat == nil or stat.size == offset then return end
+  -- like when it was replaced
+  if stat.size < offset then
+    entries, offset = {}, 0
   end
   local file = io.open(path, 'r')
   if file == nil then return end
@@ -93,47 +93,47 @@ local function set_prompt(bufnr, text)
 end
 
 --- Keeps what the prompt holds, when it changed from the entry it shows
---- @param session otto.Session
-local function leave(session)
-  local recall = session.recall
+--- @param view otto.View
+local function leave(view)
+  local recall = view.recall
   local entry = recall.entries[recall.index]
-  local text = vim.fn.prompt_getinput(session.bufnr)
+  local text = vim.fn.prompt_getinput(view.bufnr)
   recall.edits[entry] = text ~= entry.text and text or nil
 end
 
---- @param session otto.Session
+--- @param view otto.View
 --- @return otto.Recall
-local function start(session)
-  local recall = session.recall or { index = 0, edits = {}, entries = {} }
+local function start(view)
+  local recall = view.recall or { index = 0, edits = {}, entries = {} }
   -- the newest entries, unless it's stepping through them
   if recall.index == 0 then
     local draft = recall.entries[0] or { text = '' }
     recall.entries = M.list(vim.fn.getcwd())
     recall.entries[0] = draft
   end
-  session.recall = recall
+  view.recall = recall
   return recall
 end
 
 --- Steps through the history of the current folder, older for a positive count
---- @param session otto.Session
+--- @param view otto.View
 --- @param count integer
-function M.step(session, count)
-  local recall = start(session)
+function M.step(view, count)
+  local recall = start(view)
   local index = math.max(math.min(recall.index + count, #recall.entries), 0)
   if index == recall.index then return end
-  leave(session)
+  leave(view)
   recall.index = index
   local entry = recall.entries[index]
-  set_prompt(session.bufnr, recall.edits[entry] or entry.text)
+  set_prompt(view.bufnr, recall.edits[entry] or entry.text)
 end
 
 --- Puts text into the prompt, keeping what it held like stepping does, so that <M-n> brings it back
---- @param session otto.Session
+--- @param view otto.View
 --- @param entry otto.HistoryEntry | { text: string } Of the history, or of somewhere else, like a prompt to edit
-function M.insert(session, entry)
-  local recall = start(session)
-  leave(session)
+function M.insert(view, entry)
+  local recall = start(view)
+  leave(view)
   recall.index = 0
   for i, other in ipairs(recall.entries) do
     if other == entry then recall.index = i end
@@ -144,7 +144,7 @@ function M.insert(session, entry)
     recall.index = 1
   end
   recall.edits[entry] = nil
-  set_prompt(session.bufnr, entry.text)
+  set_prompt(view.bufnr, entry.text)
 end
 
 --- Writes the file whole, renamed into place so that another instance never reads half of it
@@ -160,26 +160,11 @@ local function write(file_path, data)
   vim.uv.fs_rename(temp, file_path)
 end
 
---- Removes every entry with the text from the history, like a prompt with a secret in it
---- @param text string
-function M.forget(text)
-  local file = io.open(path, 'r')
-  if file == nil then return end
-  local lines = {}
-  for line in file:lines() do
-    local ok, entry = pcall(vim.json.decode, line)
-    if not (ok and type(entry) == 'table' and entry.text == text) then table.insert(lines, line .. '\n') end
-  end
-  file:close()
-  write(path, table.concat(lines))
-  entries, offset = {}, 0
-end
-
 --- Picks a prompt from the history into the prompt, which shows the one under the cursor
---- @param session otto.Session
+--- @param view otto.View
 --- @param all boolean Of every folder
-function M.pick(session, all)
-  local bufnr = session.bufnr
+function M.pick(view, all)
+  local bufnr = view.bufnr
   local original = vim.fn.prompt_getinput(bufnr)
   --- @param text string
   local function show(text)
@@ -204,43 +189,15 @@ function M.pick(session, all)
 
   pick.select({
     prompt = 'History: ',
-    items = function() return M.list(not all and vim.fn.getcwd() or nil) end,
+    items = M.list(not all and vim.fn.getcwd() or nil),
     format = format,
     text = function(entry) return entry.text end,
     preview = function(entry) show(entry and entry.text or original) end,
     on_accept = function(entry)
       if not vim.api.nvim_buf_is_valid(bufnr) then return end
       show(original)
-      M.insert(session, entry)
+      M.insert(view, entry)
     end,
-    actions = {
-      { key = '<M-p>', run = function(_, picker) picker.move(1) end },
-      { key = '<M-n>', run = function(_, picker) picker.move(-1) end },
-      {
-        key = '<M-s>',
-        desc = function() return all and 'this folder' or 'all folders' end,
-        run = function(_, picker)
-          all = not all
-          picker.refresh()
-        end,
-      },
-      {
-        key = '<M-d>',
-        desc = 'delete',
-        run = function(entry, picker)
-          if entry == nil then return end
-          M.forget(entry.text)
-          picker.refresh()
-        end,
-      },
-      {
-        key = '<M-o>',
-        desc = 'open session',
-        run = function(entry, picker)
-          if entry ~= nil then picker.close(function() vim.cmd.edit(entry.session) end) end
-        end,
-      },
-    },
   })
 end
 
@@ -280,7 +237,7 @@ function M.restore_draft(bufnr)
 end
 
 --- Forgets where the session was in the history, and what the prompt held, once it submits
---- @param session otto.Session
-function M.reset(session) session.recall = nil end
+--- @param view otto.View
+function M.reset(view) view.recall = nil end
 
 return M

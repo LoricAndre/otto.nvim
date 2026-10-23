@@ -1,13 +1,13 @@
 -- The log of a session, which providers build from what happened, the same way from their session files and their
 -- processes. A turn starts with what the agent does after the last one ended, and ends when the agent settles while it
 -- runs, when a prompt follows its answer, or at the end of the session file. So every turn ends. What the transcript
--- doesn't show, like the session's name, goes to the status instead
+-- doesn't show, like the session's name, goes to the state instead
 
 local event = require('otto.event')
 
 --- @class otto.Log
 --- @field emit fun(event: otto.Event)
---- @field on_status fun(status: otto.Status)
+--- @field on_state fun(patch: otto.StatePatch)
 --- @field turn boolean Whether a turn is running
 --- @field started? integer When the turn started
 --- @field worked boolean Whether the agent did anything in the turn
@@ -20,11 +20,11 @@ Log.__index = Log
 local M = {}
 
 --- @param emit fun(event: otto.Event)
---- @param on_status fun(status: otto.Status)
+--- @param on_state fun(patch: otto.StatePatch)
 --- @return otto.Log
-function M.new(emit, on_status)
+function M.new(emit, on_state)
   return setmetatable(
-    { emit = emit, on_status = on_status, turn = false, worked = false, answered = false, interrupted = false },
+    { emit = emit, on_state = on_state, turn = false, worked = false, answered = false, interrupted = false },
     Log
   )
 end
@@ -41,7 +41,7 @@ function Log:push(fields, at)
     self.answered = false
     self.interrupted = false
   end
-  if fields.type ~= 'user' and fields.type ~= 'message' then self.worked = true end
+  if fields.type ~= 'user' then self.worked = true end
   self.at = fields.at
   self.emit(fields)
 end
@@ -105,16 +105,6 @@ function Log:tool_result(result, at)
   self.answered = false
 end
 
---- A message from another agent, which the agent reads like a prompt
---- @param message table The fields of `otto.Event` for messages
---- @param at? integer
-function Log:message(message, at)
-  self:prompted()
-  message.type = 'message'
-  self:push(message, at)
-  self.answered = false
-end
-
 --- @param message string
 --- @param at? integer
 function Log:error(message, at)
@@ -132,10 +122,7 @@ function Log:compaction(compaction, at)
 end
 
 --- What the session runs with, which the history has too
---- @param info { name?: string, model?: string, effort?: string, context?: integer, cost?: number, parent?: string }
-function Log:info(info)
-  info.type = 'info'
-  self.on_status(info)
-end
+--- @param patch otto.StatePatch
+function Log:state(patch) self.on_state(patch) end
 
 return M

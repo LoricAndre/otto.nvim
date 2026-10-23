@@ -16,9 +16,8 @@ local target_ns = vim.api.nvim_create_namespace('otto.targets')
 local separator = { { ('─'):rep(500), 'OttoSeparator' } } -- clipped to the window
 
 --- @class otto.Target A location that a line of the transcript is about, which <CR> opens
---- @field path? string
+--- @field path string
 --- @field lnum? integer
---- @field uri? string Of a session, like a subagent's
 
 --- @class otto.Buffer
 --- @field bufnr integer
@@ -201,7 +200,6 @@ function Buffer:target_at(row)
   local marks = vim.api.nvim_buf_get_extmarks(self.bufnr, target_ns, { row, -1 }, { 0, 0 }, { limit = 1 })
   local target = marks[1] and self.targets[marks[1][1]]
   if target == nil or row >= marks[1][2] + (target.count or 1) then return end
-  if target.uri ~= nil then return { uri = target.uri } end
   local line = vim.api.nvim_buf_get_lines(self.bufnr, row, row + 1, false)[1]
   if target.parse == 'diff' then
     -- removed lines are numbered in the old file, so they open at the next line of the new one

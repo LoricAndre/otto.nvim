@@ -1,27 +1,15 @@
--- Pickers, in minibuffer.nvim when it's set up, with notes aligned on the right, previews and actions on their keys.
--- Otherwise in `vim.ui.select`, without them
+-- Pickers, in minibuffer.nvim when it's set up, with notes aligned on the right and previews. Otherwise in
+-- `vim.ui.select`, without them
 
 local util = require('otto.util')
 
 --- @class otto.Picker
 --- @field prompt string
---- @field items fun(): any[] Called again when an action refreshes the picker
+--- @field items any[]
 --- @field format fun(item: any): otto.Chunks, otto.Chunks? The item, and its notes on the right
 --- @field text? fun(item: any): string What the query matches, the item as it's formatted by default
 --- @field preview? fun(item: any?) Of the item under the cursor, nil when there's none or the picker is cancelled
---- @field actions? otto.PickerAction[]
 --- @field on_accept fun(item: any)
---- @field on_cancel? fun()
-
---- @class otto.PickerAction
---- @field key string In insert mode, like "<M-d>"
---- @field desc? string | fun(): string For the footer, which skips it without one
---- @field run fun(item: any?, picker: otto.PickerControl)
-
---- @class otto.PickerControl
---- @field close fun(fn?: fun()) Calls `fn` once it's closed, after the preview is cancelled
---- @field refresh fun() Gets the items again
---- @field move fun(delta: integer)
 
 local M = {}
 
@@ -101,9 +89,8 @@ local function fallback(picker)
     local chunks, notes = picker.format(item)
     return text(chunks) .. (notes and '  ' .. text(notes) or '')
   end
-  vim.ui.select(picker.items(), { prompt = picker.prompt, format_item = format_item }, function(item)
-    if item ~= nil then return picker.on_accept(item) end
-    if picker.on_cancel then picker.on_cancel() end
+  vim.ui.select(picker.items, { prompt = picker.prompt, format_item = format_item }, function(item)
+    if item ~= nil then picker.on_accept(item) end
   end)
 end
 
@@ -112,7 +99,10 @@ function M.select(picker)
   local ok, minibuffer = pcall(require, 'minibuffer')
   if not ok or not require('minibuffer.internal.state').initialized then return fallback(picker) end
 
-  local items, texts --- @type any[]?, table<any, string>
+  local texts = {} --- @type table<any, string>
+  for _, item in ipairs(picker.items) do
+    texts[item] = picker.text and picker.text(item) or text((picker.format(item)))
+  end
   local previewed --- @type any
   local function preview(item)
     if picker.preview == nil or item == previewed then return end
@@ -123,15 +113,7 @@ function M.select(picker)
   minibuffer.select({
     prompt = picker.prompt,
     max_height = 15,
-    fetch_fn = function(_, callback)
-      if items == nil then
-        items, texts = picker.items(), {}
-        for _, item in ipairs(items) do
-          texts[item] = picker.text and picker.text(item) or text((picker.format(item)))
-        end
-      end
-      callback(items)
-    end,
+    fetch_fn = function(_, callback) callback(picker.items) end,
     filter_fn = function(ctx) return filter(ctx.items, texts, ctx.input) end,
     format_fn = function(item)
       local chunks, notes = picker.format(item)
@@ -141,83 +123,55 @@ function M.select(picker)
       local line = vim.list_extend(fit(chunks, width), { { '  ' } })
       return vim.tbl_map(function(chunk) return { text = chunk[1], hl = chunk[2] } end, vim.list_extend(line, notes))
     end,
-    footer_fn = function(ctx)
-      local footer = { { (' %d '):format(#ctx.items), 'Normal' } }
-      for _, action in ipairs(picker.actions or {}) do
-        local desc = type(action.desc) == 'function' and action.desc() or action.desc
-        if desc then table.insert(footer, { (' %s %s '):format(action.key:gsub('[<>]', ''), desc), 'Comment' }) end
-      end
-      return footer
-    end,
     on_change = function(_, item) preview(item) end,
     on_accept = function(selection) safely(picker.on_accept, selection[1].item) end,
-    on_cancel = function()
-      preview(nil)
-      if picker.on_cancel then safely(picker.on_cancel) end
-    end,
-    -- like when it's closed for another picker, without cancelling
+    -- before accepting too, and when it's cancelled or closed for another picker
     on_close = function() preview(nil) end,
-    on_start = function(session, keyset)
-      --- @type otto.PickerControl
-      local control = {
-        close = function(fn)
-          session:close(function()
-            preview(nil)
-            if fn then safely(fn) end
-          end)
-        end,
-        refresh = function()
-          items = nil
-          session:refresh_results()
-        end,
-        move = function(delta) session:move(delta) end,
-      }
-      for _, action in ipairs(picker.actions or {}) do
-        keyset('i', action.key, function() safely(action.run, session:get_selected(), control) end)
-      end
-    end,
   })
 end
 
---- Picks an open or saved session of the current folder, open ones first, most recently used first
-function M.sessions()
+--- Picks an open session, most recently used first but the visible ones and then the current one last. With `saved`,
+--- the saved sessions of the current folder too, below the open ones
+--- @param saved? boolean
+function M.sessions(saved)
   local providers = require('otto.providers')
-  local sessions = require('otto.session').sessions
+  local views = require('otto.view').views
 
   --- @class otto.SessionItem
   --- @field uri string
   --- @field provider string
   --- @field title string
-  --- @field session? otto.Session When it's open
+  --- @field view? otto.View When it's open
   --- @field info? otto.SessionInfo When it's saved
-  --- @field child? boolean Whether it's a subagent's, below its parent
+
+  local current = vim.api.nvim_get_current_buf()
+  local visible = {} --- @type table<integer, boolean>
+  for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+    visible[vim.api.nvim_win_get_buf(win)] = true
+  end
+  --- @param bufnr integer
+  local function rank(bufnr)
+    if saved then return 0 end
+    return bufnr == current and 2 or visible[bufnr] and 1 or 0
+  end
 
   local function items()
     local list, by_uri = {}, {} --- @type otto.SessionItem[], table<string, otto.SessionItem>
-    local infos = vim.fn.getbufinfo({ bufloaded = 1 })
-    table.sort(infos, function(a, b) return a.lastused > b.lastused end)
+    local infos = vim.tbl_filter(function(buf) return views[buf.bufnr] ~= nil end, vim.fn.getbufinfo({ bufloaded = 1 }))
+    table.sort(infos, function(a, b)
+      local rank_a, rank_b = rank(a.bufnr), rank(b.bufnr)
+      if rank_a ~= rank_b then return rank_a < rank_b end
+      return a.lastused > b.lastused
+    end)
     for _, buf in ipairs(infos) do
-      local session = sessions[buf.bufnr]
-      -- subagents' sessions go below their parent's
-      if session ~= nil and session.state.parent == nil then
-        local item = { uri = buf.name, provider = session.provider.name, title = session.state.name, session = session }
-        table.insert(list, item)
-        by_uri[buf.name] = item
-      end
+      local view = views[buf.bufnr]
+      local session = view.session
+      local item = { uri = buf.name, provider = session.provider.name, title = session.state.name, view = view }
+      table.insert(list, item)
+      by_uri[buf.name] = item
     end
-    for i = #list, 1, -1 do
-      local parent = list[i].uri
-      for _, buf in ipairs(infos) do
-        local child = sessions[buf.bufnr]
-        if child and child.state.parent == parent then
-          local item = { uri = buf.name, provider = child.provider.name, title = child.state.name, session = child }
-          item.child = true
-          table.insert(list, i + 1, item)
-        end
-      end
-    end
-    for _, info in ipairs(providers.list()) do
-      local uri = info.provider .. '://' .. info.id
+    for _, info in ipairs(saved and providers.list() or {}) do
+      local uri = require('otto.uri').format(info.provider, info.id)
       local item = by_uri[uri]
       if item == nil then
         table.insert(list, { uri = uri, provider = info.provider, title = info.title, info = info })
@@ -230,21 +184,16 @@ function M.sessions()
 
   --- @param item otto.SessionItem
   local function format(item)
-    local id = item.uri:match('://(.+)')
+    local id = require('otto.uri').id(item.uri)
     -- the ids of Claude Code and Codex are UUIDs, which only need their end to be told apart
     local short = item.provider == 'pi' and id or id:sub(-8)
     local chunks = { { providers.get(item.provider).icon, 'OttoWinbarIcon' }, { item.title or id } }
-    if item.child then chunks = { { '    ' }, { item.title or id } } end
     local notes = {}
-    local state = item.session and item.session.state
-    local subagents = state and #vim.tbl_filter(function(other) return other.kind == 'subagent' end, state.background)
-    if subagents and subagents > 0 then
-      table.insert(notes, { ('%d subagent%s  '):format(subagents, subagents == 1 and '' or 's'), 'OttoStatus' })
-    end
+    local state = item.view and item.view.session.state
     if state and state.working then
       local elapsed = math.floor((vim.uv.now() - state.since) / 1000)
       table.insert(notes, { state.working .. ' ' .. require('otto.render.tools').duration(elapsed), 'OttoStatus' })
-    elseif state then
+    elseif state and saved then
       table.insert(notes, { 'open', 'OttoStatus' })
     end
     if item.info then
@@ -256,37 +205,11 @@ function M.sessions()
 
   --- @param item otto.SessionItem
   local function open(item)
-    if item.session then return vim.cmd.buffer(item.session.bufnr) end
+    if item.view then return vim.cmd.buffer(item.view.bufnr) end
     vim.cmd.edit(item.uri)
   end
 
-  M.select({
-    prompt = 'Session: ',
-    items = items,
-    format = format,
-    on_accept = open,
-    actions = {
-      {
-        key = '<M-v>',
-        desc = 'vsplit',
-        run = function(item, picker)
-          if item == nil then return end
-          picker.close(function()
-            vim.cmd.vsplit()
-            open(item)
-          end)
-        end,
-      },
-      {
-        key = '<M-y>',
-        desc = 'yank id',
-        run = function(item, picker)
-          if item == nil then return end
-          picker.close(function() vim.fn.setreg(vim.v.register, item.uri:match('://(.+)')) end)
-        end,
-      },
-    },
-  })
+  M.select({ prompt = 'Session: ', items = items(), format = format, on_accept = open })
 end
 
 return M

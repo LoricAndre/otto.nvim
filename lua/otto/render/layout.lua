@@ -45,7 +45,6 @@ M.body_indent = body_indent
 --- @field lnum? integer Of the first line, which the next lines count up from
 --- @field parse? 'diff' | 'location' Whether the line number, or the location, comes from the text of each line
 --- @field col? integer Where the location starts in the lines
---- @field uri? string Of a session, like a subagent's, instead of a location
 
 --- @class otto.Op
 --- @field type 'block' | 'settle' Settling folds the groups of the turn, which stay open while it runs
@@ -55,13 +54,11 @@ M.body_indent = body_indent
 --- @field tail? 'user' | 'text' | 'tool' | 'error' | 'note' Kind of the last block, which spaces the next one
 --- @field group? { tools: string[], failed: integer } Tools since the last block of another kind
 --- @field calls table<string, { tool: string, args: table, at?: integer }> Tool calls by id, until their result arrives
---- @field running { id: string, tool: string, args: table }[] The same calls, in order
---- @field edits vim.quickfix.entry[] Files that the agent edited, at the first changed line
 local Layout = {}
 Layout.__index = Layout
 
 --- @return otto.Layout
-function M.new() return setmetatable({ calls = {}, running = {}, edits = {} }, Layout) end
+function M.new() return setmetatable({ calls = {} }, Layout) end
 
 --- @param block otto.Block
 --- @return otto.Op[]
@@ -88,7 +85,8 @@ local function tool_lines(header, sections, indent, highlights, targets)
   for _, section in ipairs(sections) do
     local before = #lines - 1 -- index of the line before the section
     for _, line in ipairs(section.lines) do
-      table.insert(lines, indent .. body_indent .. line)
+      -- without trailing whitespace on blank lines
+      table.insert(lines, line == '' and '' or indent .. body_indent .. line)
     end
     local count = #section.lines
     if section.path and count > 0 then
@@ -142,20 +140,41 @@ local function thousands(tokens) return math.floor(tokens / 1000) .. 'k' end
 --- @return string[]
 local function split(text) return vim.split(text, '\n') end
 
+--- @param call { tool: string, args: table }
+--- @param diff otto.DiffLine[]
+--- @return otto.Chunks
+local function diff_header(call, diff)
+  local header = tools.header(call.tool, call.args)
+  local added, removed = tools.diff_counts(diff)
+  return vim.list_extend(header, { { ('  +%d'):format(added), 'Added' }, { (' -%d'):format(removed), 'Removed' } })
+end
+
+--- Files that the agent edited, at the first changed line, for the quickfix list
+--- @param events otto.Event[] The log
+--- @return vim.quickfix.entry[]
+function M.edits(events)
+  local calls, edits = {}, {}
+  for _, event in ipairs(events) do
+    if event.type == 'tool_call' then calls[event.id] = tools.call(event.tool, event.args) end
+    local call = event.type == 'tool_result' and event.diff ~= nil and calls[event.id]
+    -- which results without a call don't have
+    if call and call.args.path ~= nil then
+      local _, first_changed = tools.diff_lines(event.diff)
+      local text = tools.join(diff_header(call, event.diff))
+      table.insert(edits, { filename = call.args.path, lnum = first_changed or 1, text = text })
+    end
+  end
+  return edits
+end
+
 --- Edits show their diff since that's what matters, with the changed lines highlighted, and the code as its language
 --- @param call { tool: string, args: table }
 --- @param diff otto.DiffLine[]
 --- @return otto.Op[]
 function Layout:diff(call, diff)
-  local header = tools.header(call.tool, call.args)
-  local added, removed = tools.diff_counts(diff)
-  vim.list_extend(header, { { ('  +%d'):format(added), 'Added' }, { (' -%d'):format(removed), 'Removed' } })
+  local header = diff_header(call, diff)
   local lines, first_changed = tools.diff_lines(diff)
-  -- which results without a call don't have
   local path = call.args.path
-  if path ~= nil then
-    table.insert(self.edits, { filename = path, lnum = first_changed or 1, text = tools.join(header) })
-  end
 
   local targets = path
       and {
@@ -210,7 +229,6 @@ end
 function Layout:tool_result(result)
   local call = self.calls[result.id] or { tool = '?', args = {} }
   self.calls[result.id] = nil
-  self.running = vim.tbl_filter(function(running) return running.id ~= result.id end, self.running)
   local tool = call.tool
   local args = call.args
   if result.diff ~= nil then return self:diff(call, result.diff) end
@@ -220,9 +238,9 @@ function Layout:tool_result(result)
     -- without the line that the last newline would start
     local lines = args.content == '' and {} or split((args.content:gsub('\n$', '')))
     table.insert(header, { ('  +%d'):format(#lines), 'Added' })
-    local section = tools.output(lines, vim.filetype.match({ filename = args.path }))
-    section.path = args.path
-    section.first = 1
+    -- all of them, since the block folds
+    local section =
+      { lines = lines, filetype = vim.filetype.match({ filename = args.path }), path = args.path, first = 1 }
     local ops = self:tool_block('tool', header, { section }, { { index = 0, path = args.path } })
     ops[1].block.call = { tool = tool, args = args }
     return ops
@@ -253,33 +271,7 @@ function Layout:tool_result(result)
   if section.path ~= nil then
     table.insert(ops[1].block.targets, { index = 0, path = section.path, lnum = section.first })
   end
-  if result.child ~= nil then table.insert(ops[1].block.targets, { index = 0, uri = result.child }) end
   return ops
-end
-
-local kinds = { failed = 'OttoToolFailed', stopped = 'OttoToolFailed' }
-
---- A message from another agent, like a subagent handing back its report, with what the subagent used when it ended
---- @param message otto.Event
---- @return otto.Op[]
-function Layout:message(message)
-  local header = { { 'from', 'OttoToolName' }, { ' ' .. message.from, 'OttoToolArg' } }
-  if message.kind ~= nil then
-    table.insert(header, { '  ' .. message.kind, kinds[message.kind] or 'OttoToolDetail' })
-  end
-  local usage = {}
-  if (message.seconds or 0) > 0 then table.insert(usage, tools.duration(message.seconds)) end
-  if (message.tools or 0) > 0 then
-    table.insert(usage, message.tools .. (message.tools == 1 and ' tool' or ' tools'))
-  end
-  if (message.tokens or 0) >= 1000 then table.insert(usage, thousands(message.tokens)) end
-  if #usage > 0 then table.insert(header, { '  ' .. table.concat(usage, ' · '), 'OttoStatusTime' }) end
-  local targets = message.uri and { { index = 0, uri = message.uri } } or {}
-  local text = vim.trim(message.text or '')
-  if text == '' then
-    return self:block({ kind = 'note', lines = { tools.join(header) }, indent = '', header = header, targets = targets })
-  end
-  return self:tool_block('note', header, { { lines = split(text), filetype = 'markdown' } }, targets)
 end
 
 --- @param compaction otto.Event
@@ -323,25 +315,17 @@ function Layout:add(event)
   elseif event.type == 'error' then
     return self:block({ kind = 'error', lines = split(event.message) })
   elseif event.type == 'tool_call' then
-    local call = { tool = event.tool, args = event.args or {} }
-    -- like the agent's own tools, so that it shows what the agent sent
-    if not tools.valid(call.tool, call.args) then
-      call = { tool = event.tool .. '?', args = { description = vim.json.encode(call.args) } }
-    end
+    local call = tools.call(event.tool, event.args)
     call.at = event.at
     self.calls[event.id] = call
-    table.insert(self.running, { id = event.id, tool = call.tool, args = call.args })
   elseif event.type == 'tool_result' then
     return self:tool_result(event)
-  elseif event.type == 'message' then
-    return self:message(event)
   elseif event.type == 'compaction' then
     return self:compaction(event)
   elseif event.type == 'turn_end' then
     local ops = (event.worked or event.aborted) and self:worked(event) or {}
     self.group = nil
     self.calls = {}
-    self.running = {}
     table.insert(ops, { type = 'settle' })
     return ops
   end

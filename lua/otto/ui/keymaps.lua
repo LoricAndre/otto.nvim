@@ -1,6 +1,5 @@
 -- Keymaps of a session's buffer, which run the commands of `commands.lua` through <Plug>(otto-<command>) maps, like
--- <Plug>(otto-submit), which after/ftplugin/otto.lua can map too. Actions on what's under the cursor are under
--- <localleader>, which which-key lists
+-- <Plug>(otto-submit), which after/ftplugin/otto.lua can map too
 
 local commands = require('otto.ui.commands')
 local config = require('otto.config')
@@ -15,9 +14,9 @@ local function plug(name) return ('<Plug>(otto-%s)'):format(name) end
 function M.plug()
   for _, command in ipairs(commands.builtin) do
     vim.keymap.set(command.modes or 'n', plug(command.name), function()
-      local session = require('otto.session').sessions[vim.api.nvim_get_current_buf()]
-      if session == nil then return '' end
-      return commands.run(session, command.name)
+      local view = require('otto.view').views[vim.api.nvim_get_current_buf()]
+      if view == nil then return '' end
+      return commands.run(view, command.name)
     end, { desc = 'Otto: ' .. command.description, expr = command.expr })
   end
 end
@@ -72,9 +71,9 @@ function M.keys(bufnr)
 end
 
 --- Maps the configured keys, but not over the buffer's own, like those of after/ftplugin/otto.lua
---- @param session otto.Session
-function M.attach(session)
-  local bufnr = session.bufnr
+--- @param view otto.View
+function M.attach(view)
+  local bufnr = view.bufnr
   local keymaps = config.get({ bufnr = bufnr }).keymaps
   vim.api.nvim_buf_call(bufnr, function()
     -- otto's from before a restart, which the config may have changed since
