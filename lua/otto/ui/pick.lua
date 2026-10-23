@@ -10,6 +10,7 @@ local util = require('otto.util')
 --- @field format fun(item: any): otto.Chunks, otto.Chunks? The item, and its notes on the right
 --- @field text? fun(item: any): string What the query matches, the item as it's formatted by default
 --- @field preview? fun(item: any?) Of the item under the cursor, nil when there's none or the picker is cancelled
+--- @field fuzzy? boolean Whether the query matches fuzzily, ranked, instead of by its words, of items that are strings
 --- @field on_accept fun(item: any)
 
 local M = {}
@@ -98,7 +99,10 @@ function M.select(picker)
     prompt = picker.prompt,
     max_height = 15,
     fetch_fn = function(_, callback) callback(picker.items) end,
-    filter_fn = function(ctx) return filter(ctx.items, texts, ctx.input) end,
+    filter_fn = function(ctx)
+      if not picker.fuzzy then return filter(ctx.items, texts, ctx.input) end
+      return ctx.input == '' and ctx.items or vim.fn.matchfuzzy(ctx.items, ctx.input)
+    end,
     format_fn = function(item)
       local chunks, notes = picker.format(item)
       notes = notes or {}
@@ -195,6 +199,36 @@ function M.sessions(with_saved)
   end
 
   M.select({ prompt = 'Session: ', items = items(), format = format, on_accept = open })
+end
+
+--- @async
+--- @return string[] The current folder's files that aren't ignored, relative to it
+local function list_files()
+  local cmd = vim.fn.executable('rg') == 1 and { 'rg', '--files' }
+    or { 'git', 'ls-files', '--cached', '--others', '--exclude-standard' }
+  local out = util.await(function(callback)
+    vim.system(cmd, { text = true }, vim.schedule_wrap(function(result) callback(nil, result) end))
+  end)
+  if out.code ~= 0 then error(cmd[1] .. ': ' .. vim.trim(out.stderr or ''), 0) end
+  local files = vim.split(out.stdout, '\n', { trimempty = true })
+  table.sort(files)
+  return files
+end
+
+--- Picks a file of the current folder, fuzzily
+--- @async
+--- @param on_accept fun(path: string)
+function M.files(on_accept)
+  M.select({
+    prompt = 'File: ',
+    items = list_files(),
+    fuzzy = true,
+    format = function(path)
+      local name = vim.fs.basename(path)
+      return { { path:sub(1, #path - #name), 'Comment' }, { name } }
+    end,
+    on_accept = on_accept,
+  })
 end
 
 return M

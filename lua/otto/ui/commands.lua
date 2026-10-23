@@ -42,6 +42,20 @@ local function take_back(view, texts)
   vim.api.nvim_buf_set_lines(view.bufnr, row, -1, false, vim.split(table.concat(texts, '\n'), '\n'))
 end
 
+--- Inserts text into the input, and goes on inserting after it
+--- @param view otto.View
+--- @param row integer 1-indexed
+--- @param col integer
+--- @param text string
+local function insert(view, row, col, text)
+  vim.api.nvim_buf_set_text(view.bufnr, row - 1, col, row - 1, col, { text })
+  if vim.api.nvim_get_current_buf() ~= view.bufnr then return end
+  if vim.fn.mode() == 'i' then return vim.api.nvim_win_set_cursor(0, { row, col + #text }) end
+  -- on its last character, since normal mode can't put the cursor past the end of the line
+  vim.api.nvim_win_set_cursor(0, { row, col + #text - 1 })
+  vim.api.nvim_feedkeys('a', 'n', false)
+end
+
 --- @param view otto.View
 --- @param backward boolean
 local function jump_to_prompt(view, backward)
@@ -238,6 +252,31 @@ M.builtin = {
     palette = false,
     run = function(view) M.palette(view) end,
   },
+  {
+    -- the agent's commands start with it, which the palette picks from
+    name = 'slash',
+    description = 'Commands at the start of the input, otherwise /',
+    modes = { 'i' },
+    palette = false,
+    -- not an expr, which would see the cursor before the keys typed ahead of it are inserted
+    run = function(view)
+      local row, col = unpack(vim.api.nvim_win_get_cursor(0))
+      if row == vim.api.nvim_buf_get_mark(view.bufnr, ':')[1] and col == 0 then return M.palette(view) end
+      vim.api.nvim_feedkeys('/', 'in', false)
+    end,
+  },
+  {
+    name = 'at',
+    description = 'Mention a file at the start of a word, otherwise @',
+    modes = { 'i' },
+    palette = false,
+    run = function(view)
+      local row, col = unpack(vim.api.nvim_win_get_cursor(0))
+      local before = vim.api.nvim_get_current_line():sub(1, col)
+      if before ~= '' and not before:match('%s$') then return vim.api.nvim_feedkeys('@', 'in', false) end
+      pick.files(function(path) insert(view, row, col, '@' .. path .. ' ') end)
+    end,
+  },
 }
 
 --- @param view otto.View
@@ -308,13 +347,7 @@ function M.palette(view)
     local name = item.command.name
     if item.builtin then return M.run(view, name) end
     -- before what the input holds, which becomes its argument
-    local row = vim.api.nvim_buf_get_mark(view.bufnr, ':')[1]
-    vim.api.nvim_buf_set_text(view.bufnr, row - 1, 0, row - 1, 0, { '/' .. name .. ' ' })
-    if vim.api.nvim_get_current_buf() ~= view.bufnr then return end
-    if vim.fn.mode() == 'i' then return vim.api.nvim_win_set_cursor(0, { row, #name + 2 }) end
-    -- after the space, which normal mode can't put the cursor past at the end of the line
-    vim.api.nvim_win_set_cursor(0, { row, #name + 1 })
-    vim.api.nvim_feedkeys('a', 'n', false)
+    insert(view, vim.api.nvim_buf_get_mark(view.bufnr, ':')[1], 0, '/' .. name .. ' ')
   end
 
   pick.select({ prompt = 'Command: ', items = items, format = format, on_accept = run })

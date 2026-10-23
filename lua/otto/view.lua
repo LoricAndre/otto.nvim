@@ -6,7 +6,6 @@ local footer = require('otto.ui.footer')
 local history = require('otto.ui.history')
 local keymaps = require('otto.ui.keymaps')
 local layout = require('otto.render.layout')
-local lsp = require('otto.ui.lsp')
 local providers = require('otto.providers')
 local sessions = require('otto.session')
 local transcript = require('otto.render.transcript')
@@ -96,7 +95,6 @@ function M.load(bufnr)
   vim.bo[bufnr].bufhidden = 'hide'
   vim.bo[bufnr].swapfile = false
   vim.bo[bufnr].filetype = 'otto'
-  vim.b[bufnr].completion = true -- blink.cmp skips prompt buffers otherwise
   vim.fn.prompt_setprompt(bufnr, '')
   -- which may have been started for the filetype
   vim.treesitter.stop(bufnr)
@@ -125,7 +123,6 @@ function M.load(bufnr)
 
   vim.fn.prompt_setcallback(bufnr, function(text) view:submit(text) end)
   keymaps.attach(view)
-  lsp.attach(view)
 end
 
 --- Restarts the agent for the session's buffer, and renders the session again
