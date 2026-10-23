@@ -105,6 +105,7 @@ end
 
 --- @class otto.PiHandle : otto.Handle
 --- @field id string
+--- @field closed? boolean
 --- @field proc otto.Proc
 --- @field log otto.Log
 --- @field state otto.PiState
@@ -136,29 +137,33 @@ function Handle:dialog(request)
     local levels = { warning = vim.log.levels.WARN, error = vim.log.levels.ERROR }
     return util.notify(request.message, levels[request.notifyType] or vim.log.levels.INFO)
   end
+  local deadline = request.timeout and (vim.uv.now() + request.timeout)
+  local answered = false
+  local function active() return not self.closed and not answered and (not deadline or vim.uv.now() < deadline) end
   local function respond(value)
+    if not active() then return end
+    answered = true
     local key = request.method == 'confirm' and 'confirmed' or 'value'
     self.proc:send({ type = 'extension_ui_response', id = request.id, [key] = value, cancelled = value == nil or nil })
   end
+  local status = { type = 'request', respond = respond, active = active, deadline = deadline }
   if request.method == 'input' or request.method == 'editor' then
-    self.on_status({
-      type = 'request',
-      kind = 'input',
+    self.on_status(vim.tbl_extend('force', status, {
+      kind = request.method,
       prompt = request.title,
       default = request.prefill,
-      respond = respond,
-    })
+    }))
   elseif request.method == 'select' then
-    self.on_status({
-      type = 'request',
+    self.on_status(vim.tbl_extend('force', status, {
       kind = 'select',
       prompt = request.title,
       items = request.options,
-      respond = respond,
-    })
+    }))
   elseif request.method == 'confirm' then
     local prompt = request.title .. (request.message and ': ' .. request.message or '')
-    self.on_status({ type = 'request', kind = 'confirm', prompt = prompt, respond = respond })
+    self.on_status(vim.tbl_extend('force', status, { kind = 'confirm', prompt = prompt }))
+  else
+    self.on_status({ type = 'extension_ui', event = request })
   end
 end
 
@@ -324,7 +329,10 @@ function Handle:fork(id)
   return { id = self:call({ type = 'get_state' }).sessionId, text = fork.text, switched = true }
 end
 
-function Handle:close() self.proc:close() end
+function Handle:close()
+  self.closed = true
+  self.proc:close()
+end
 
 --- @param id string
 --- @param args string[] for pi
@@ -345,6 +353,8 @@ local function start(id, args, config, on_log, on_status)
     name = 'pi',
     on_message = function(msg) handle:on_message(msg) end,
     on_exit = function()
+      handle.closed = true
+      handle.on_status({ type = 'ui_reset' })
       handle.log:settle(true)
       handle:set_working(nil)
       if handle.on_settled ~= nil then handle.on_settled('pi exited') end

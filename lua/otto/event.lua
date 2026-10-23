@@ -70,7 +70,8 @@ local M = {}
 --- @field text string
 
 --- @class otto.Status
---- @field type 'working' | 'queue' | 'info' | 'background' | 'request'
+--- @field type 'working' | 'queue' | 'info' | 'background' | 'request' | 'extension_ui' | 'ui_reset'
+--- @field event? table Extension UI request
 --- working
 --- @field state? 'working' | 'thinking' | 'compacting' Nothing when the agent stopped
 --- queue: prompts that the agent hasn't read yet, including the one that was just sent
@@ -88,7 +89,9 @@ local M = {}
 --- background: what the agent runs beside the conversation, replaced whole
 --- @field background? otto.Background[]
 --- request
---- @field kind? 'select' | 'input' | 'confirm'
+--- @field kind? 'select' | 'input' | 'confirm' | 'editor'
+--- @field active? fun(): boolean Whether the request can still be answered
+--- @field deadline? integer Milliseconds of the event loop
 --- @field prompt? string
 --- @field items? string[] select
 --- @field default? string input
