@@ -6,6 +6,7 @@ local folds = require('otto.render.folds')
 local highlight = require('otto.highlight')
 local layout = require('otto.render.layout')
 local tools = require('otto.render.tools')
+local util = require('otto.util')
 
 local ns = vim.api.nvim_create_namespace('otto')
 local separator_ns = vim.api.nvim_create_namespace('otto.separators')
@@ -45,16 +46,16 @@ end
 function Transcript:modify(fn)
   local bufnr = self.bufnr
   local undolevels = vim.bo[bufnr].undolevels
-  local modifiable = vim.bo[bufnr].modifiable -- which read-only sessions aren't
+  local modifiable = vim.bo[bufnr].modifiable -- which the user may have turned off
   vim.bo[bufnr].undolevels = -1
   vim.bo[bufnr].modifiable = true
 
-  local input_row = vim.api.nvim_buf_get_mark(bufnr, ':')[1] - 1
+  local input_row = util.input_row(bufnr)
   -- the undo levels come back even when it fails
   local ok, err =
     pcall(fn, input_row > 0 and is_separator(bufnr, input_row - 1) and input_row - 2 or input_row, input_row)
 
-  input_row = vim.api.nvim_buf_get_mark(bufnr, ':')[1] - 1
+  input_row = util.input_row(bufnr)
   if input_row > 0 and not is_separator(bufnr, input_row - 1) then
     vim.api.nvim_buf_set_lines(bufnr, input_row, input_row, false, { '', '' })
     vim.api.nvim_buf_set_extmark(bufnr, separator_ns, input_row + 1, 0, {
@@ -82,7 +83,7 @@ function Transcript:anchor()
     pcall(vim.cmd.undojoin)
     vim.api.nvim_buf_set_lines(bufnr, -1, -1, false, vim.split(('\n'):rep(missing - 1), '\n'))
   end
-  if vim.api.nvim_buf_get_mark(bufnr, ':')[1] ~= row + 1 then vim.api.nvim_buf_set_mark(bufnr, ':', row + 1, 0, {}) end
+  if util.input_row(bufnr) ~= row then vim.api.nvim_buf_set_mark(bufnr, ':', row + 1, 0, {}) end
 end
 
 --- @param namespace integer
@@ -281,6 +282,9 @@ function Transcript:remove_submitted(text)
   )
   self.on_change()
 end
+
+--- Drops the highlights that wait to be drawn, which hold the lines of their blocks
+function Transcript:close() highlight.clear(self.bufnr) end
 
 --- Starts the transcript of the buffer, removing what was there
 --- @param bufnr integer

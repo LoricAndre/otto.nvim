@@ -47,7 +47,8 @@
 --- @field provider string
 --- @field id string
 --- @field name? string Display name
---- @field title string Display name, or the first prompt
+--- @field prompt? string The first one
+--- @field title string Display name, or the first prompt, or the id
 --- @field message_count integer
 --- @field modified integer Seconds since the epoch
 
@@ -75,6 +76,7 @@ function M.saved()
   -- Codex's files are of every folder, and read only those of the current one
   local cwd = vim.fn.getcwd()
   for _, provider in pairs(M.providers) do
+    local names = provider.names and provider.names() or {}
     for _, file in ipairs(provider.files()) do
       local mtime = vim.uv.fs_stat(file.file).mtime
       local cached = cache[file.file]
@@ -82,13 +84,11 @@ function M.saved()
       if cached == nil or cached.mtime.sec ~= mtime.sec or cached.mtime.nsec ~= mtime.nsec or cached.cwd ~= cwd then
         cache[file.file] = { mtime = mtime, cwd = cwd, saved = file.parse(file.file, mtime.sec) }
       end
-      if cache[file.file].saved ~= nil then table.insert(sessions, cache[file.file].saved) end
-    end
-    local names = provider.names and provider.names() or {}
-    for _, saved in ipairs(sessions) do
-      if saved.provider == provider.name and names[saved.id] ~= nil then
-        saved.name = names[saved.id]
-        saved.title = saved.name
+      local saved = cache[file.file].saved
+      if saved ~= nil then
+        saved.name = names[saved.id] or saved.name
+        saved.title = saved.name or (saved.prompt and vim.trim(saved.prompt):gsub('%s+', ' ')) or saved.id
+        table.insert(sessions, saved)
       end
     end
   end

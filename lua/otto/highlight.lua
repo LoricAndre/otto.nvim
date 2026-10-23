@@ -2,6 +2,8 @@
 -- only changes by appending, so each block highlights once, parsed on its own as its language, when it's first drawn,
 -- and changing the input only parses the input. See PLAN.md
 
+local util = require('otto.util')
+
 local M = {}
 
 local ns = vim.api.nvim_create_namespace('otto.highlights')
@@ -38,7 +40,8 @@ end
 --- @param places otto.Place[] of each line
 --- @param lines string[]
 --- @param lang string Treesitter language, which may not have a parser
-local function highlight(bufnr, namespace, places, lines, lang)
+--- @param transient? boolean Whether the highlights are deleted with their text, like the input's once it's sent
+local function highlight(bufnr, namespace, places, lines, lang, transient)
   local text = table.concat(lines, '\n')
   local ok, parser = pcall(vim.treesitter.get_string_parser, text, lang)
   if not ok then return end
@@ -52,8 +55,12 @@ local function highlight(bufnr, namespace, places, lines, lang)
       if not skipped[name] and not vim.startswith(name, '_') then
         local range = vim.treesitter.get_range(node, text, metadata[id])
         local priority = tonumber(metadata.priority or metadata[id] and metadata[id].priority)
-        local opts =
-          { hl_group = '@' .. name .. '.' .. language, priority = vim.hl.priorities.treesitter + (priority or 0) }
+        local opts = {
+          hl_group = '@' .. name .. '.' .. language,
+          priority = vim.hl.priorities.treesitter + (priority or 0),
+          invalidate = transient,
+          undo_restore = not transient,
+        }
         -- line by line, since the lines may be apart
         for line = range[1], range[4] do
           local place = places[line + 1]
@@ -104,10 +111,10 @@ vim.api.nvim_set_decoration_provider(pending_ns, {
   end,
 })
 
---- Removes the highlights of the transcript
+--- Removes the highlights of the transcript, and those that wait to be drawn
 --- @param bufnr integer
 function M.clear(bufnr)
-  pending[bufnr] = {}
+  pending[bufnr] = nil
   vim.api.nvim_buf_clear_namespace(bufnr, pending_ns, 0, -1)
   vim.api.nvim_buf_clear_namespace(bufnr, ns, 0, -1)
 end
@@ -182,10 +189,10 @@ end
 --- Highlights the input as markdown again, after it changed
 --- @param bufnr integer
 function M.input(bufnr)
-  local row = vim.api.nvim_buf_get_mark(bufnr, ':')[1] - 1
+  local row = util.input_row(bufnr)
   vim.api.nvim_buf_clear_namespace(bufnr, input_ns, row, -1)
   local lines = vim.api.nvim_buf_get_lines(bufnr, row, -1, false)
-  highlight(bufnr, input_ns, below({}, row, 0, #lines), lines, 'markdown')
+  highlight(bufnr, input_ns, below({}, row, 0, #lines), lines, 'markdown', true)
 end
 
 return M

@@ -14,6 +14,7 @@ function M.session_file(id)
   end)
   return ('%s/.claude/projects/%s/%s.jsonl'):format(vim.env.HOME, folder, id)
 end
+
 --- @param file string
 --- @param modified integer
 --- @return otto.SavedSession
@@ -36,7 +37,7 @@ local function parse(file, modified)
     end
   end
   saved.name = custom or ai
-  saved.title = saved.name or (first_prompt and vim.trim(first_prompt):gsub('%s+', ' ')) or id
+  saved.prompt = first_prompt
   return saved
 end
 

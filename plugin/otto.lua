@@ -4,11 +4,16 @@
 if vim.g.loaded_otto then return end
 vim.g.loaded_otto = true
 
+local commands = require('otto.ui.commands')
+local history = require('otto.ui.history')
+local keymaps = require('otto.ui.keymaps')
+local otto = require('otto')
+local pick = require('otto.ui.pick')
 local providers = require('otto.providers')
+local scroll = require('otto.ui.scroll')
 local uri = require('otto.uri')
 local util = require('otto.util')
-
-vim.treesitter.language.register('markdown', 'otto')
+local view = require('otto.view')
 
 local group = vim.api.nvim_create_augroup('otto', {})
 
@@ -42,63 +47,51 @@ link()
 -- since colorschemes clear the highlights first
 vim.api.nvim_create_autocmd('ColorScheme', { group = group, callback = link })
 
-require('otto.ui.keymaps').define_plugs()
-
---- @return table<integer, otto.View>? by buffer, unless no session has loaded yet
-local function views()
-  local view = package.loaded['otto.view']
-  return view and view.views
-end
+keymaps.define_plugs()
 
 vim.api.nvim_create_autocmd('BufReadCmd', {
   group = group,
   pattern = vim.tbl_map(function(name) return uri.format(name, '*') end, vim.tbl_keys(providers.providers)),
-  callback = function(ev) require('otto.view').load(ev.buf) end,
+  callback = function(ev) view.load(ev.buf) end,
 })
 vim.api.nvim_create_autocmd({ 'WinResized', 'WinScrolled' }, {
   group = group,
   callback = function()
-    local loaded = views()
-    if loaded == nil then return end
     for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
-      if loaded[vim.api.nvim_win_get_buf(win)] ~= nil then require('otto.ui.scroll').scrolled(win) end
+      if view.views[vim.api.nvim_win_get_buf(win)] ~= nil then scroll.scrolled(win) end
     end
   end,
 })
 vim.api.nvim_create_autocmd('VimLeavePre', {
   group = group,
-  callback = function()
-    local loaded = views()
-    if loaded ~= nil then require('otto.ui.history').save_drafts(vim.tbl_keys(loaded)) end
-  end,
+  callback = function() history.save_drafts(vim.tbl_keys(view.views)) end,
 })
 
 --- @type table<string, fun(arg?: string, cmd: vim.api.keyset.create_user_command.command_args)>
 local subcommands = {
-  send = function(_, cmd) require('otto').send(cmd.line1, cmd.line2) end,
+  send = function(_, cmd) otto.send(cmd.line1, cmd.line2) end,
   resume = function(id)
-    if id == nil then return require('otto.ui.pick').sessions(true) end
+    if id == nil then return pick.sessions(true) end
     local saved = vim.iter(providers.saved()):find(function(session) return session.id == id end)
     if saved == nil then return util.notify('no saved session ' .. id) end
     vim.cmd.edit(uri.format(saved.provider, saved.id))
   end,
-  pick = function() require('otto.ui.pick').sessions() end,
+  pick = function() pick.sessions() end,
 }
 for name in pairs(providers.providers) do
-  subcommands[name] = function(arg) require('otto').new(arg, name) end
+  subcommands[name] = function(arg) otto.new(arg, name) end
 end
 
 --- @return otto.View?
-local function current() return (views() or {})[vim.api.nvim_get_current_buf()] end
+local function current() return view.views[vim.api.nvim_get_current_buf()] end
 
 -- :Otto pi [name], :Otto claude [name], :Otto codex [name], :Otto resume [id], :Otto pick, which :Otto defaults to, and
 -- :Otto send for the current line or a range. In a session, the commands of the palette too, like :Otto compact
 vim.api.nvim_create_user_command('Otto', function(cmd)
   local subcommand = subcommands[cmd.fargs[1] or 'pick']
-  local commands = require('otto.ui.commands')
-  local view = current()
-  if subcommand == nil and view ~= nil and commands.get(cmd.fargs[1]) then
-    local keys = commands.run(view, cmd.fargs[1])
+  local session_view = current()
+  if subcommand == nil and session_view ~= nil and commands.get(cmd.fargs[1]) then
+    local keys = commands.run(session_view, cmd.fargs[1])
     if keys then vim.api.nvim_feedkeys(vim.keycode(keys), 'n', false) end
     return
   end
@@ -112,8 +105,8 @@ end, {
     local words = vim.split(line, '%s+')
     if #words <= 2 then
       local names = vim.tbl_keys(subcommands)
-      local view = current()
-      for _, command in ipairs(view and require('otto.ui.commands').available(view) or {}) do
+      local session_view = current()
+      for _, command in ipairs(session_view and commands.available(session_view) or {}) do
         if subcommands[command.name] == nil then table.insert(names, command.name) end
       end
       table.sort(names)

@@ -23,9 +23,7 @@ local default_context_window = 1000000
 --- @field decoder otto.ClaudeDecoder
 --- @field on_state fun(patch: otto.StatePatch)
 --- @field on_request fun(request: otto.Request)
---- @field init? table Response to `initialize`, with the commands and models
---- @field init_error? string When `initialize` failed
---- @field waiting fun()[] Waiting for `init`
+--- @field init otto.Ready Response to `initialize`, with the commands and models
 --- @field model string
 --- @field effort string like "high", which Claude Code only writes to the session file
 --- @field working boolean
@@ -82,12 +80,7 @@ function Agent:call(request) return self.rpc:call(frame(request)) end
 
 --- @async
 --- @return table response to `initialize`
-function Agent:await_init()
-  if self.init == nil and self.init_error == nil then
-    vim.async.await(1, function(done) table.insert(self.waiting, done) end)
-  end
-  return self.init or error(self.init_error, 0)
-end
+function Agent:await_init() return self.init:await() end
 
 function Agent:report_queue()
   local texts = vim.tbl_map(function(queued) return queued.text end, self.unread)
@@ -292,8 +285,7 @@ end
 --- @async
 function Agent:cycle_effort()
   local model = vim.iter(self:await_init().models):find(function(option) return option.resolvedModel == self.model end)
-  local levels = model and model.supportedEffortLevels or { 'low', 'medium', 'high' }
-  local level = levels[(vim.fn.index(levels, self.effort) + 1) % #levels + 1]
+  local level = util.next_effort(model and model.supportedEffortLevels or {}, self.effort)
   self:call({ subtype = 'apply_flag_settings', settings = { effortLevel = level } })
   self.effort = level
   self.on_state({ effort = level })
@@ -348,7 +340,7 @@ function M.open(id, opts)
     decoder = decode.new(),
     on_state = opts.on_state,
     on_request = opts.on_request,
-    waiting = {},
+    init = util.ready(),
     model = opts.config.model,
     effort = opts.config.effort,
     working = false,
@@ -397,13 +389,7 @@ function M.open(id, opts)
     env = { CLAUDECODE = '' },
   })
   -- an error raises in what waits for it, like the commands that every session loads
-  agent:request({ subtype = 'initialize' }, function(err, response)
-    agent.init, agent.init_error = response, err
-    for _, waiting in ipairs(agent.waiting) do
-      waiting()
-    end
-    agent.waiting = {}
-  end)
+  agent:request({ subtype = 'initialize' }, function(err, response) agent.init:set(err, response) end)
   opts.on_state({ model = opts.config.model, effort = opts.config.effort, context_window = default_context_window })
   return agent
 end

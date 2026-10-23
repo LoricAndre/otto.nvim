@@ -30,7 +30,7 @@ local function parse(file, modified)
       end
     end
   end
-  saved.title = first_prompt and vim.trim(first_prompt):gsub('%s+', ' ') or meta.id
+  saved.prompt = first_prompt
   return saved
 end
 

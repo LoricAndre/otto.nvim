@@ -36,6 +36,8 @@
 --- @field effort? string
 --- @field permission_mode? string
 
+local commands = require('otto.ui.commands')
+
 local keymaps = {
   ['<CR>'] = { n = 'open', i = 'newline' },
   ['<C-s>'] = 'submit',
@@ -85,17 +87,14 @@ end
 local function schema()
   local types = require('blink.lib.config').types
 
-  -- the commands load their pickers, so they're only looked up when validating
   local keymaps_type = types.validator('map(keycode, command | false | map(mode, command | false))', function(val)
     if type(val) ~= 'table' then return false end
-    local commands = require('otto.ui.commands')
-    local by_mode = require('otto.ui.keymaps').by_mode
     for lhs, value in pairs(val) do
       if not types.keycode.validator(lhs) then return false, ('[%s]: expected keycode'):format(tostring(lhs)) end
       if value ~= false and type(value) ~= 'string' and type(value) ~= 'table' then
         return false, ('[%s]: expected command, false or table, got %s'):format(lhs, vim.inspect(value))
       end
-      for mode, name in pairs(by_mode(value)) do
+      for mode, name in pairs(commands.by_mode(value)) do
         local path = type(value) == 'table' and ('[%s].%s'):format(lhs, mode) or ('[%s]'):format(lhs)
         local command = type(name) == 'string' and commands.get(name)
         if not command then return false, ('%s: unknown command %s'):format(path, vim.inspect(name)) end

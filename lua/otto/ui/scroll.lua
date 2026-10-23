@@ -1,6 +1,8 @@
 -- Keeps the windows of a session's buffer scrolled to the same lines of the input, as output arrives above it and
 -- folds change
 
+local util = require('otto.util')
+
 local M = {}
 
 --- Where the window shows the input, which the separator isn't part of
@@ -14,7 +16,7 @@ function M.watch(win)
   local bufnr = vim.api.nvim_win_get_buf(win)
   vim.w[win].otto_scroll = vim.api.nvim_win_call(win, function()
     local bottom = vim.fn.line('w$')
-    local input = vim.api.nvim_buf_get_mark(bufnr, ':')[1]
+    local input = util.input_row(bufnr) + 1
     if bottom < input then return nil end
     local offset = bottom < vim.api.nvim_buf_line_count(bufnr) and bottom - input or nil
     return { height = vim.api.nvim_win_get_height(win), offset = offset }
@@ -29,7 +31,7 @@ local function restore(win)
   local bufnr = vim.api.nvim_win_get_buf(win)
   vim.api.nvim_win_call(win, function()
     local last = vim.api.nvim_buf_line_count(bufnr)
-    local input = vim.api.nvim_buf_get_mark(bufnr, ':')[1]
+    local input = util.input_row(bufnr) + 1
     local cursor = vim.api.nvim_win_get_cursor(win)
     local scrolloff = vim.api.nvim_get_option_value('scrolloff', { win = win, scope = 'local' })
     vim.wo[win].scrolloff = 0 -- so that the line goes to the very bottom

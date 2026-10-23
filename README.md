@@ -30,8 +30,9 @@ Pickers use [minibuffer.nvim](https://github.com/saghen/minibuffer.nvim) when it
 | --- | --- |
 | `<C-s>`, `<CR>` (normal) | Submit |
 | `<M-CR>` | Submit as follow-up |
-| `<C-c>` | Stop, taking back queued prompts |
-| `<M-p>`, `<M-n>` | Take back queued prompts one by one, then prompt history |
+| `<C-c>` | Stop |
+| `<M-p>` | Older prompt history or edit queued history |
+| `<M-n>` | Newer prompt history |
 | `<M-r>` | Prompt history picker |
 | `<M-x>` | Commands |
 | `\p` | Jump to a prompt |

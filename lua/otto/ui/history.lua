@@ -83,12 +83,10 @@ end
 --- @param bufnr integer
 --- @param text string
 local function set_input(bufnr, text)
-  local row = vim.api.nvim_buf_get_mark(bufnr, ':')[1] - 1
-  local lines = vim.split(text, '\n')
   vim.bo[bufnr].undolevels = vim.bo[bufnr].undolevels -- its own undo step, so that `u` brings back what was there
-  vim.api.nvim_buf_set_lines(bufnr, row, -1, false, lines)
+  util.set_input(bufnr, text)
   if vim.api.nvim_get_current_buf() ~= bufnr then return end
-  vim.api.nvim_win_set_cursor(0, { vim.api.nvim_buf_line_count(bufnr), #lines[#lines] })
+  vim.api.nvim_win_set_cursor(0, { vim.api.nvim_buf_line_count(bufnr), #text:match('[^\n]*$') })
   scroll.follow(bufnr)
 end
 
@@ -169,11 +167,10 @@ function M.pick(view, all)
   --- @param text string
   local function show(text)
     if not vim.api.nvim_buf_is_valid(bufnr) then return end
-    local row = vim.api.nvim_buf_get_mark(bufnr, ':')[1] - 1
     -- outside of the undo history, which only keeps the prompt that's picked
     local undolevels = vim.bo[bufnr].undolevels
     vim.bo[bufnr].undolevels = -1
-    vim.api.nvim_buf_set_lines(bufnr, row, -1, false, vim.split(text, '\n'))
+    util.set_input(bufnr, text)
     vim.bo[bufnr].undolevels = undolevels
   end
 

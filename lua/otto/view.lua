@@ -74,6 +74,7 @@ end
 function View:close()
   self.unsubscribe()
   self.footer:close()
+  self.transcript:close()
   self.session:close()
 end
 
@@ -96,8 +97,6 @@ function M.load(bufnr)
   vim.bo[bufnr].swapfile = false
   vim.bo[bufnr].filetype = 'otto'
   vim.fn.prompt_setprompt(bufnr, '')
-  -- which may have been started for the filetype
-  vim.treesitter.stop(bufnr)
 
   local view = setmetatable({ bufnr = bufnr }, View)
   view.layout = layout.new()

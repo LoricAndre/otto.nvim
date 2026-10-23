@@ -53,10 +53,7 @@ function M.start(cmd, opts)
       if out.code ~= 0 or out.signal ~= 0 then
         util.notify(rpc.name .. ' exited: ' .. (rpc.stderr and vim.trim(rpc.stderr) or out.code))
       end
-      -- requests that it never responded to
-      for id in pairs(rpc.pending) do
-        rpc:resolve(id, rpc.name .. ' exited')
-      end
+      rpc:fail_pending(rpc.name .. ' exited')
       if opts.on_exit then opts.on_exit(out.code) end
     end)
   end)
@@ -111,9 +108,18 @@ function Rpc:resolve(id, err, data)
   if callback ~= nil then callback(err, data) end
 end
 
+--- Fails the requests that it never responded to
+--- @param err string
+function Rpc:fail_pending(err)
+  for id in pairs(self.pending) do
+    self:resolve(id, err)
+  end
+end
+
 function Rpc:close()
   self.closed = true
   if not self.system:is_closing() then self.system:kill('sigterm') end
+  self:fail_pending(util.closed)
 end
 
 return M

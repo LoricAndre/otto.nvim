@@ -4,13 +4,19 @@
 if vim.b.did_ftplugin then return end
 vim.b.did_ftplugin = true
 
+local highlight = require('otto.highlight')
+local history = require('otto.ui.history')
+local scroll = require('otto.ui.scroll')
+local util = require('otto.util')
+local views = require('otto.view').views
+
 local bufnr = vim.api.nvim_get_current_buf()
 local group = vim.api.nvim_create_augroup('otto.buffer', { clear = false })
 -- which runs again when the session restarts and sets the filetype again
 vim.b.undo_ftplugin = ("lua vim.api.nvim_clear_autocmds({ group = 'otto.buffer', buffer = %d })"):format(bufnr)
 
 --- @return otto.View?
-local function view() return require('otto.view').views[bufnr] end
+local function view() return views[bufnr] end
 
 vim.api.nvim_create_autocmd('BufWinEnter', {
   group = group,
@@ -33,9 +39,7 @@ vim.api.nvim_create_autocmd('BufWinEnter', {
     -- once the window settles, so that the first output follows the prompt too
     local win = vim.api.nvim_get_current_win()
     vim.schedule(function()
-      if vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_buf(win) == bufnr then
-        require('otto.ui.scroll').watch(win)
-      end
+      if vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_buf(win) == bufnr then scroll.watch(win) end
     end)
   end,
 })
@@ -45,7 +49,7 @@ vim.api.nvim_create_autocmd({ 'TextChanged', 'TextChangedI' }, {
   callback = function()
     if view() == nil then return end
     view().transcript:anchor()
-    require('otto.highlight').input(bufnr)
+    highlight.input(bufnr)
   end,
 })
 vim.api.nvim_create_autocmd('InsertEnter', {
@@ -54,7 +58,7 @@ vim.api.nvim_create_autocmd('InsertEnter', {
   callback = function()
     if view() == nil then return end
     -- insert mode opens the fold under the cursor before the prompt buffer moves the cursor to the input
-    local input_lnum = vim.api.nvim_buf_get_mark(bufnr, ':')[1]
+    local input_lnum = util.input_row(bufnr) + 1
     if vim.fn.line('.') >= input_lnum then return end
     vim.api.nvim_win_set_cursor(0, { input_lnum, 0 })
     vim.v.char = 'moved' -- keeps the cursor there, see :help InsertEnter
@@ -64,9 +68,8 @@ vim.api.nvim_create_autocmd('BufUnload', {
   group = group,
   buffer = bufnr,
   callback = function()
-    local views = require('otto.view').views
     if views[bufnr] == nil then return end
-    require('otto.ui.history').save_drafts({ bufnr })
+    history.save_drafts({ bufnr })
     views[bufnr]:close()
     views[bufnr] = nil
   end,

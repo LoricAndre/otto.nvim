@@ -32,7 +32,7 @@ end
 function Footer:draw()
   local bufnr = self.bufnr
   local state = self.session.state
-  local row = vim.api.nvim_buf_get_mark(bufnr, ':')[1] - 1
+  local row = util.input_row(bufnr)
   vim.api.nvim_buf_clear_namespace(bufnr, ns, 0, -1)
 
   local lines = {}

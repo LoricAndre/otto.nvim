@@ -38,8 +38,7 @@ local function take_back(view, texts)
   if #texts == 0 then return end
   local input = vim.fn.prompt_getinput(view.bufnr)
   if input ~= '' then table.insert(texts, input) end
-  local row = vim.api.nvim_buf_get_mark(view.bufnr, ':')[1] - 1
-  vim.api.nvim_buf_set_lines(view.bufnr, row, -1, false, vim.split(table.concat(texts, '\n'), '\n'))
+  util.set_input(view.bufnr, table.concat(texts, '\n'))
 end
 
 --- Inserts text into the input, and goes on inserting after it
@@ -50,10 +49,12 @@ end
 local function insert(view, row, col, text)
   vim.api.nvim_buf_set_text(view.bufnr, row - 1, col, row - 1, col, { text })
   if vim.api.nvim_get_current_buf() ~= view.bufnr then return end
-  if vim.fn.mode() == 'i' then return vim.api.nvim_win_set_cursor(0, { row, col + #text }) end
-  -- on its last character, since normal mode can't put the cursor past the end of the line
-  vim.api.nvim_win_set_cursor(0, { row, col + #text - 1 })
-  vim.api.nvim_feedkeys('a', 'n', false)
+  vim.api.nvim_win_set_cursor(0, { row, col + #text })
+  if vim.fn.mode() == 'i' then return end
+  -- not with keys, which the prompt buffer types once it starts insert mode again itself, like after a picker. At the
+  -- end of the line, past its last character, which normal mode can't put the cursor after
+  local line = vim.api.nvim_buf_get_lines(view.bufnr, row - 1, row, false)[1]
+  vim.cmd.startinsert({ bang = col + #text >= #line })
 end
 
 --- @param view otto.View
@@ -261,7 +262,7 @@ M.builtin = {
     -- not an expr, which would see the cursor before the keys typed ahead of it are inserted
     run = function(view)
       local row, col = unpack(vim.api.nvim_win_get_cursor(0))
-      if row == vim.api.nvim_buf_get_mark(view.bufnr, ':')[1] and col == 0 then return M.palette(view) end
+      if row - 1 == util.input_row(view.bufnr) and col == 0 then return M.palette(view) end
       vim.api.nvim_feedkeys('/', 'in', false)
     end,
   },
@@ -289,6 +290,24 @@ end
 --- @return otto.Command?
 function M.get(name)
   return vim.iter(M.builtin):find(function(command) return command.name == name end)
+end
+
+--- @param value otto.Keymap
+--- @return table<string, string> Command by mode, without those turned off
+function M.by_mode(value)
+  if type(value) == 'string' then
+    local command = M.get(value)
+    local by_mode = {}
+    for _, mode in ipairs(command and command.modes or { 'n' }) do
+      by_mode[mode] = value
+    end
+    return by_mode
+  end
+  local by_mode = {}
+  for mode, name in pairs(type(value) == 'table' and value or {}) do
+    if name then by_mode[mode] = name end
+  end
+  return by_mode
 end
 
 --- Runs a built-in command, returning the keys to run of those that return them
@@ -347,7 +366,7 @@ function M.palette(view)
     local name = item.command.name
     if item.builtin then return M.run(view, name) end
     -- before what the input holds, which becomes its argument
-    insert(view, vim.api.nvim_buf_get_mark(view.bufnr, ':')[1], 0, '/' .. name .. ' ')
+    insert(view, util.input_row(view.bufnr) + 1, 0, '/' .. name .. ' ')
   end
 
   pick.select({ prompt = 'Command: ', items = items, format = format, on_accept = run })

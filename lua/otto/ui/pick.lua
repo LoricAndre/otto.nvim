@@ -1,7 +1,9 @@
 -- Pickers, in minibuffer.nvim when it's set up, with notes aligned on the right and previews. Otherwise in
 -- `vim.ui.select`, without them
 
+local providers = require('otto.providers')
 local tools = require('otto.render.tools')
+local uri = require('otto.uri')
 local util = require('otto.util')
 
 --- @class otto.Picker
@@ -122,7 +124,7 @@ end
 --- `with_saved`, the saved sessions of the current folder too, below the open ones
 --- @param with_saved? boolean
 function M.sessions(with_saved)
-  local providers = require('otto.providers')
+  -- here, since it loads this module
   local views = require('otto.view').views
 
   --- @class otto.SessionItem
@@ -159,10 +161,10 @@ function M.sessions(with_saved)
       by_uri[buf.name] = item
     end
     for _, saved in ipairs(with_saved and providers.saved() or {}) do
-      local uri = require('otto.uri').format(saved.provider, saved.id)
-      local item = by_uri[uri]
+      local saved_uri = uri.format(saved.provider, saved.id)
+      local item = by_uri[saved_uri]
       if item == nil then
-        table.insert(list, { uri = uri, provider = saved.provider, title = saved.title, saved = saved })
+        table.insert(list, { uri = saved_uri, provider = saved.provider, title = saved.title, saved = saved })
       else
         item.title, item.saved = item.title or saved.title, saved
       end
@@ -172,7 +174,7 @@ function M.sessions(with_saved)
 
   --- @param item otto.SessionItem
   local function format(item)
-    local id = require('otto.uri').id(item.uri)
+    local id = uri.id(item.uri)
     -- the ids of Claude Code and Codex are UUIDs, which only need their end to be told apart
     local short = item.provider == 'pi' and id or id:sub(-8)
     local chunks = { { providers.get(item.provider).icon, 'OttoWinbarIcon' }, { item.title or id } }

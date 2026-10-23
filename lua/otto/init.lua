@@ -3,10 +3,11 @@
 local config = require('otto.config')
 local providers = require('otto.providers')
 local uri = require('otto.uri')
+local view = require('otto.view')
+local winbar = require('otto.ui.winbar')
 
 local M = {}
 
---- Merges into the configuration, see `config.lua`
 --- @param opts? otto.ConfigPartial
 function M.setup(opts) config.set(opts or {}) end
 
@@ -16,7 +17,7 @@ function M.setup(opts) config.set(opts or {}) end
 function M.new(name, provider)
   provider = provider or config.default_provider
   local session_uri = uri.unique(provider, providers.get(provider).new_id(name))
-  require('otto.view').pending_names[session_uri] = name
+  view.pending_names[session_uri] = name
   vim.cmd.edit(session_uri)
 end
 
@@ -30,7 +31,7 @@ end
 
 --- @return otto.View[] views of open sessions, most recently used first
 local function open_views()
-  local views = require('otto.view').views
+  local views = view.views
   local infos = vim.tbl_filter(function(info) return views[info.bufnr] ~= nil end, vim.fn.getbufinfo({ bufloaded = 1 }))
   table.sort(infos, function(a, b) return a.lastused > b.lastused end)
   return vim.tbl_map(function(info) return views[info.bufnr] end, infos)
@@ -38,9 +39,9 @@ end
 
 --- Appends text to the most recently used session by default, or a new one, and starts insert mode
 --- @param text string
---- @param bufnr? integer Of the session
-function M.append(text, bufnr)
-  local recent = require('otto.view').views[bufnr] or open_views()[1]
+--- @param session_bufnr? integer Of the session
+function M.append(text, session_bufnr)
+  local recent = view.views[session_bufnr] or open_views()[1]
   if recent ~= nil then
     vim.cmd.buffer(recent.bufnr)
   else
@@ -55,18 +56,18 @@ function M.append(text, bufnr)
   vim.cmd.startinsert({ bang = true })
 end
 
---- Spaces the transcript from the edge, highlighted like the prompts on their lines. Signs would do, but they only
---- highlight the first row of wrapped lines: https://github.com/neovim/neovim/issues/12866
+--- Spaces the transcript from the edge, highlighted like the prompts on their lines
+--- https://github.com/neovim/neovim/issues/12866
 --- @return string
 function M.statuscolumn()
-  local current = require('otto.view').views[vim.api.nvim_win_get_buf(vim.g.statusline_winid)]
+  local current = view.views[vim.api.nvim_win_get_buf(vim.g.statusline_winid)]
   return current and current.transcript:is_prompt(vim.v.lnum - 1) and '%#OttoPrompt#  ' or '  '
 end
 
 --- @return string
 function M.winbar()
-  local current = require('otto.view').views[vim.api.nvim_win_get_buf(vim.g.statusline_winid)]
-  return current and require('otto.ui.winbar').render(current) or ''
+  local current = view.views[vim.api.nvim_win_get_buf(vim.g.statusline_winid)]
+  return current and winbar.render(current) or ''
 end
 
 return M

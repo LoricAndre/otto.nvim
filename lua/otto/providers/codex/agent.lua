@@ -18,8 +18,7 @@ local function is_thread(id) return id:match('^%x+%-%x+%-%x+%-%x+%-%x+$') ~= nil
 --- @field on_state fun(patch: otto.StatePatch)
 --- @field on_request fun(request: otto.Request)
 --- @field thread? string id, once Codex started or resumed it
---- @field waiting fun()[] Requests that wait for the thread
---- @field thread_error? string When the thread failed to start
+--- @field started otto.Ready Once the thread started, or failed to
 --- @field turn? string id of the turn that's running
 --- @field turn_started? integer When the turn started
 --- @field working boolean From sending a prompt until its turn completes
@@ -43,12 +42,7 @@ end
 
 --- Waits until the thread started
 --- @async
-function Agent:await_thread()
-  if self.thread == nil and self.thread_error == nil then
-    vim.async.await(1, function(done) table.insert(self.waiting, done) end)
-  end
-  if self.thread == nil then error(self.thread_error, 0) end
-end
+function Agent:await_thread() self.started:await() end
 
 --- Invokes the method once the thread started
 --- @async
@@ -81,7 +75,7 @@ local function input(text) return { { type = 'text', text = text, text_elements 
 function Agent:start_turn(text, on_error)
   on_error = on_error or util.notify
   -- of a thread that failed to start, which nothing would read
-  if self.thread_error ~= nil then return on_error(self.thread_error) end
+  if self.started.err ~= nil then return on_error(self.started.err) end
   local id = util.uuid()
   table.insert(self.unread, { text = text, id = id })
   self:report_queue()
@@ -295,8 +289,7 @@ function Agent:cycle_effort()
   local model = vim.iter(self.models):find(function(option) return option.id == self.model end)
   local options = model and model.supportedReasoningEfforts or {}
   local levels = vim.tbl_map(function(option) return option.reasoningEffort end, options)
-  if #levels == 0 then levels = { 'low', 'medium', 'high' } end
-  self.effort = levels[(vim.fn.index(levels, self.effort) + 1) % #levels + 1]
+  self.effort = util.next_effort(levels, self.effort)
   self.on_state({ effort = self.effort })
 end
 
@@ -317,18 +310,14 @@ function Agent:close() self.rpc:close() end
 --- @param result? table Of `thread/start` or `thread/resume`
 function Agent:on_thread_started(err, result)
   if err ~= nil then
-    -- which raises in what waits for the thread, like the replay that every session starts with
-    self.thread_error = err
     self.unread, self.follow_ups = {}, {}
     self:report_queue()
     self:set_working(false)
   elseif result ~= nil then
     self:set_thread(result)
   end
-  for _, waiting in ipairs(self.waiting) do
-    waiting()
-  end
-  self.waiting = {}
+  -- an error raises in what waits for the thread, like the replay that every session starts with
+  self.started:set(err)
 end
 
 --- @param result table Of `thread/start` or `thread/resume`
@@ -355,7 +344,7 @@ function M.open(id, opts)
     log = log.new(opts.on_log, opts.on_state),
     on_state = opts.on_state,
     on_request = opts.on_request,
-    waiting = {},
+    started = util.ready(),
     working = false,
     models = {},
     announced = {},

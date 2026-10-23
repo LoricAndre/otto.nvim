@@ -21,24 +21,6 @@ function M.define_plugs()
   end
 end
 
---- @param value otto.Keymap
---- @return table<string, string> Command by mode, without those turned off
-function M.by_mode(value)
-  if type(value) == 'string' then
-    local command = commands.get(value)
-    local by_mode = {}
-    for _, mode in ipairs(command and command.modes or { 'n' }) do
-      by_mode[mode] = value
-    end
-    return by_mode
-  end
-  local by_mode = {}
-  for mode, name in pairs(type(value) == 'table' and value or {}) do
-    if name then by_mode[mode] = name end
-  end
-  return by_mode
-end
-
 --- @param lhs string
 --- @param than? string
 --- @return boolean Whether it's the better key to show, the one of fewer keys, like <M-x> over <localleader>x
@@ -84,7 +66,7 @@ function M.attach(view)
     end
     local set = {}
     for lhs, value in pairs(keymaps or {}) do
-      for mode, name in pairs(M.by_mode(value)) do
+      for mode, name in pairs(commands.by_mode(value)) do
         if vim.fn.maparg(lhs, mode, false, true).buffer ~= 1 then
           local desc = 'Otto: ' .. commands.get(name).description
           vim.keymap.set(mode, lhs, plug(name), { buf = bufnr, desc = desc })

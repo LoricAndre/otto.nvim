@@ -1,6 +1,6 @@
 -- What the transcript shows for the log, without a buffer: blocks of lines, separated by an empty line, except for
 -- tools, which follow the text that explains them. Edits and writes stand on their own, and other tools group under a
--- summary on the line above the first. See `buffer.lua` for where they go
+-- summary on the line above the first. See `transcript.lua` for where they go
 
 local tools = require('otto.render.tools')
 local util = require('otto.util')

@@ -17,6 +17,7 @@ function M.session_file(id)
     .iter(vim.fn.glob(('%s/*_%s.jsonl'):format(folder(), id), false, true))
     :find(function(file) return vim.fs.basename(file):match('^[^_]*_(.+)%.jsonl$') == id end)
 end
+
 --- @param file string
 --- @param modified integer
 --- @return otto.SavedSession
@@ -37,7 +38,7 @@ local function parse(file, modified)
       end
     end
   end
-  saved.title = saved.name or (first_prompt and vim.trim(first_prompt):gsub('%s+', ' ')) or id
+  saved.prompt = first_prompt
   return saved
 end
 
