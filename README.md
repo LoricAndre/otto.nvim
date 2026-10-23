@@ -50,6 +50,7 @@ require('otto').setup({
   default_provider = 'pi',
   ask = { provider = 'pi' }, -- one-shot prompts, like naming sessions
   cleanup_delay = 10000, -- ms before an empty, hidden session's buffer is deleted
+  tool_header = false, -- function(call) for custom tool headers, false for defaults
   -- command, command by mode, or false to disable. `keymaps = false` disables them all
   keymaps = {
     ['<CR>'] = { n = 'open', i = 'newline' },
@@ -79,5 +80,41 @@ vim.keymap.set('i', '<C-j>', '<Plug>(otto-submit)', { buffer = true })
 -- or configure only this session, before its agent starts
 require('otto.config').set({ providers = { claude = { model = 'claude-sonnet-5-5' } } }, { bufnr = 0 })
 ```
+
+## Tool headers
+
+Set `tool_header` to change the header of running and completed tool calls:
+
+```lua
+require('otto').setup({
+  tool_header = function(call)
+    if call.tool == 'bash' then
+      return {
+        { '$ ', 'OttoToolName' },
+        (call.args.description or call.args.command):match('[^\n]*'),
+      }
+    end
+    return nil -- use Otto's default header for other tools
+  end,
+})
+```
+
+The callback receives `{ tool, args }`, with Otto's normalized tool name and
+arguments (see `otto.ToolArgs` in `lua/otto/event.lua`). Unknown tools keep their
+provider names and arguments. Invalid arguments use Otto's existing fallback
+name and description.
+
+Return a list of strings or `{ text, highlight_group }` pairs. Strings and pairs
+without a highlight group use `Normal`. Include any spaces between items.
+Each item's text must be one line. Return `nil` for the default header, or set
+`tool_header = false` to disable the callback. Callback errors and invalid return
+values report an error and use the default header.
+
+Otto still adds failure details, elapsed time, and edit/write counts. Tool output,
+diffs, folds, navigation, and actions do not change. The callback also runs when
+history loads and when running tools redraw; keep it fast and synchronous.
+Arguments are copied so that changes in the callback cannot change the call.
+Per-buffer configuration uses the session buffer, even when it is not current.
+Headers already in the transcript do not change when the configuration changes.
 
 Unlike my other projects, this project has been AI assisted, use at your own risk!
