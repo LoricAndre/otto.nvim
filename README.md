@@ -47,7 +47,6 @@ Pickers use [minibuffer.nvim](https://github.com/saghen/minibuffer.nvim) when it
 
 ```lua
 require('otto').setup({
-  picker = 'vim_ui', -- 'auto' uses minibuffer when set up; 'minibuffer' requires it
   providers = {
     pi = {
       cmd = { '/opt/Pi Tools/bin/pi', '--model', 'provider/model' },
@@ -154,7 +153,7 @@ Otto renders the UI data that Pi sends through RPC. No extra UI dependencies are
 
 | Pi extension method | Neovim frontend |
 | --- | --- |
-| `select`, `confirm` | Otto's configured picker (`minibuffer` or `vim.ui.select`) |
+| `select`, `confirm` | Otto's auto-detected picker (`minibuffer` or `vim.ui.select`) |
 | `input` | `vim.ui.input` |
 | `notify` | `vim.notify` |
 | `editor` | Native scratch-buffer window for multi-line text |
@@ -163,8 +162,8 @@ Otto renders the UI data that Pi sends through RPC. No extra UI dependencies are
 | `setTitle` | Session winbar title, not the global terminal title |
 | `setEditorText` | Replace the current prompt without submitting it |
 
-Set `picker = 'vim_ui'` to use your registered `vim.ui.select` frontend for dialogs
-and session pickers. Otto uses your current `vim.ui.input` and `vim.notify` functions.
+Pickers use minibuffer when it is set up, otherwise `vim.ui.select`, as described
+above. Otto uses your current `vim.ui.input` and `vim.notify` functions.
 It does not replace these global functions.
 
 In the multi-line editor, use **Ctrl-S** to accept. In normal mode, use **q** or
@@ -192,35 +191,5 @@ buffer. The getter returns an empty table when no extension UI state exists.
 
 Pi does not send custom terminal components, component-factory widgets, or custom
 footers through RPC. Installing a Neovim UI frontend does not enable those features.
-
-### Manual UI test
-
-The demo extension in `tests/fixtures/ui-demo.ts` exercises the native UI. Use its
-absolute path in a fresh Neovim instance loaded with the local Otto checkout:
-
-```lua
-require('otto').setup({
-  picker = 'vim_ui',
-  providers = { pi = { args = { '--extension', '/path/to/otto/tests/fixtures/ui-demo.ts' } } },
-})
-```
-
-Start a named session with `:Otto pi ui-demo`, then submit `/otto-ui-demo` in its
-prompt. The command displays widgets, status text, a selection, and an editor dialog.
-A named session avoids Otto's automatic naming request. The demo command itself
-does not make a model request. Restart the session to clear the demo title.
-
-## Tests
-
-Use Neovim 0.13 nightly or newer with `vim.async`.
-The tests use Lua assertions and process stubs. They do not start agents or make
-provider requests. Use the `vim-async` branch of `blink.lib`.
-
-```sh
-nvim --headless -u NONE --cmd 'set rtp+=/path/to/blink.lib' -l tests/config.lua
-nvim --headless -u NONE --cmd 'set rtp+=/path/to/blink.lib' -l tests/ui.lua
-nvim --headless -u NONE --cmd 'set rtp+=/path/to/blink.lib' -l tests/events.lua
-stylua --check lua plugin tests
-```
 
 Unlike my other projects, this project has been AI assisted, use at your own risk!
