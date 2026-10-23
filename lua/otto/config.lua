@@ -1,7 +1,7 @@
 -- Otto's configuration, which `require('otto').setup()` merges into, or `set` with `{ bufnr }` for a session's
 -- buffer, like in after/ftplugin/otto.lua. Providers read theirs when they start
 
---- @class (exact) otto.ConfigStrict
+--- @class (exact) otto.Config
 --- @field default_provider 'pi' | 'claude' | 'codex' Of `:Otto` and new sessions
 --- @field keymaps table<string, otto.Keymap> | false Of the session's buffer, false for none
 --- @field providers { pi: otto.ProviderConfig, claude: otto.ClaudeConfig, codex: otto.ProviderConfig }
@@ -18,7 +18,7 @@
 --- @field effort string
 --- @field permission_mode string
 
---- @class (exact) otto.Config : otto.ConfigStrict, {}
+--- @class (exact) otto.ConfigPartial : otto.Config, {}
 --- @field default_provider? 'pi' | 'claude' | 'codex'
 --- @field keymaps? table<string, otto.Keymap> | false
 --- @field providers? { pi?: otto.ProviderConfigPartial, claude?: otto.ClaudeConfigPartial, codex?: otto.ProviderConfigPartial }
@@ -132,10 +132,10 @@ local function schema()
 end
 
 -- created on first use, since blink.lib may be added to the runtimepath after otto loads
-local instance --- @type blink.lib.Config?
-local function get()
-  if instance == nil then instance = require('blink.lib.config').new(schema(), { validate = false }) end
-  return instance
+local cached --- @type blink.lib.Config?
+local function instance()
+  if cached == nil then cached = require('blink.lib.config').new(schema(), { validate = false }) end
+  return cached
 end
 
 --- The current buffer, which blink.lib only tracks on BufEnter, after a session's buffer loads and its ftplugin runs
@@ -149,21 +149,21 @@ end
 local M = {}
 
 --- @param filter? blink.lib.config.Filter
---- @return otto.ConfigStrict
+--- @return otto.Config
 function M.get(filter)
-  return get().get(vim.tbl_extend('force', filter or {}, { bufnr = to_bufnr(filter and filter.bufnr) }))
+  return instance().get(vim.tbl_extend('force', filter or {}, { bufnr = to_bufnr(filter and filter.bufnr) }))
 end
 
---- @param tbl otto.Config
+--- @param tbl otto.ConfigPartial
 --- @param opts? blink.lib.config.SetOpts
 function M.set(tbl, opts)
   if type(tbl.keymaps) == 'table' then tbl = vim.tbl_extend('force', tbl, { keymaps = normalize(tbl.keymaps) }) end
   if opts and opts.bufnr ~= nil then opts = vim.tbl_extend('force', opts, { bufnr = to_bufnr(opts.bufnr) }) end
-  get().set(tbl, opts)
+  instance().set(tbl, opts)
   return M
 end
 
---- @type otto.ConfigStrict | { get: fun(filter?: blink.lib.config.Filter): otto.ConfigStrict, set: fun(tbl: otto.Config, opts?: blink.lib.config.SetOpts) }
+--- @type otto.Config | { get: fun(filter?: blink.lib.config.Filter): otto.Config, set: fun(tbl: otto.ConfigPartial, opts?: blink.lib.config.SetOpts) }
 return setmetatable(M, {
   __index = function(_, key) return M.get()[key] end,
   __call = function(_, ...) return M.set(...) end,

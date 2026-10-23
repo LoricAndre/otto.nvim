@@ -11,7 +11,7 @@ local tools = { search = 'grep', kagi_search = 'web_search', web_fetch = 'fetch'
 --- pi's diffs number their lines, like "+12 code", and mark the gaps between hunks with "..."
 --- @param diff string
 --- @return otto.DiffLine[]
-local function diff_lines(diff)
+local function parse_diff(diff)
   -- lines around the change are numbered in the old file, so they move by the lines changed above them
   local shift = 0
   return vim.tbl_map(function(line)
@@ -23,38 +23,39 @@ local function diff_lines(diff)
   end, vim.split(diff, '\n'))
 end
 
---- @class otto.PiState What the decoder keeps between messages
+--- @class otto.PiDecoder What the decoder keeps between messages
 --- @field cost number Of the session so far
 
+--- @return otto.PiDecoder
+function M.new() return { cost = 0 } end
+
 --- Adds a message of pi to the log, which is the same in its session files and its events
---- @param session_log otto.Log
---- @param state otto.PiState
+--- @param log otto.Log
+--- @param decoder otto.PiDecoder
 --- @param msg table AgentMessage
 --- @param at? integer When it ended, which is when its entry was saved, or now, since messages only say when they
 --- started
-function M.message(session_log, state, msg, at)
+function M.add(log, decoder, msg, at)
   if msg.role == 'user' then
-    session_log:user(vim.trim(event.text_of(msg.content)), at)
+    log:user(vim.trim(event.text_of(msg.content)), at)
   elseif msg.role == 'assistant' then
     for _, part in ipairs(msg.content or {}) do
-      if part.type == 'text' and vim.trim(part.text) ~= '' then session_log:text(vim.trim(part.text), at) end
-      if part.type == 'toolCall' then
-        session_log:tool_call(part.id, tools[part.name] or part.name, part.arguments, at)
-      end
+      if part.type == 'text' and vim.trim(part.text) ~= '' then log:text(vim.trim(part.text), at) end
+      if part.type == 'toolCall' then log:tool_call(part.id, tools[part.name] or part.name, part.arguments, at) end
     end
-    if msg.errorMessage ~= nil then session_log:error(msg.errorMessage, at) end
+    if msg.errorMessage ~= nil then log:error(msg.errorMessage, at) end
     -- aborting ends the answer with an error, like "The operation was aborted."
     local aborted = msg.stopReason == 'error' and (msg.errorMessage or ''):find('aborted', 1, true)
-    if msg.stopReason == 'aborted' or aborted then session_log:interrupt() end
+    if msg.stopReason == 'aborted' or aborted then log:mark_aborted() end
     if msg.usage ~= nil then
-      state.cost = state.cost + (vim.tbl_get(msg.usage, 'cost', 'total') or 0)
-      session_log:state({ context = msg.usage.totalTokens, cost = state.cost })
+      decoder.cost = decoder.cost + (vim.tbl_get(msg.usage, 'cost', 'total') or 0)
+      log:patch_state({ context_tokens = msg.usage.totalTokens, cost = decoder.cost })
     end
   elseif msg.role == 'toolResult' then
     local output = util.trim_end(event.text_of(msg.content))
     local result = { id = msg.toolCallId, ok = not msg.isError, output = output }
     local diff = vim.tbl_get(msg, 'details', 'diff')
-    if diff ~= nil then result.diff = diff_lines(diff) end
+    if diff ~= nil then result.diff = parse_diff(diff) end
     -- the text of search results has HTML in it, but their details don't
     local results = vim.tbl_get(msg, 'details', 'results')
     if type(results) == 'table' and results[1] and results[1].url then
@@ -70,7 +71,7 @@ function M.message(session_log, state, msg, at)
       result.output = text == '' and vim.trim(rest) or text .. rest
       result.exit_code = tonumber(code)
     end
-    session_log:tool_result(result, at)
+    log:tool_result(result, at)
   end
 end
 

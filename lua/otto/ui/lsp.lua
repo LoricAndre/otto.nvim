@@ -1,8 +1,8 @@
 local M = {}
 
-local cmd --- @type fun(dispatchers: vim.lsp.rpc.Dispatchers, config: vim.lsp.ClientConfig): vim.lsp.rpc.Client
+local server --- @type fun(dispatchers: vim.lsp.rpc.Dispatchers, config: vim.lsp.ClientConfig): vim.lsp.rpc.Client
 
---- Completes the agent's /commands at the start of the prompt and @paths anywhere in it
+--- Completes the agent's /commands at the start of the input and @paths anywhere in it
 --- @param params lsp.CompletionParams
 --- @return lsp.CompletionList?
 local function complete(params)
@@ -16,11 +16,11 @@ local function complete(params)
   local kinds = vim.lsp.protocol.CompletionItemKind
 
   local items = {}
-  local prompt_row = vim.api.nvim_buf_get_mark(view.bufnr, ':')[1] - 1
-  -- the agent's own commands, since otto's are in the palette. Like submitting, which trims the prompt
-  if vim.startswith(token, '/') and vim.trim(before) == token and row == prompt_row then
+  local input_row = vim.api.nvim_buf_get_mark(view.bufnr, ':')[1] - 1
+  -- the agent's own commands, since otto's are in the palette. Like submitting, which trims the input
+  if vim.startswith(token, '/') and vim.trim(before) == token and row == input_row then
     for _, command in ipairs(require('otto.ui.commands').agent_commands(view)) do
-      local item = { label = command.name, kind = kinds.Function, detail = command.args }
+      local item = { label = command.name, kind = kinds.Function, detail = command.arg_hint }
       item.documentation = command.description
       table.insert(items, item)
     end
@@ -42,13 +42,13 @@ end
 vim.lsp.config('otto', {
   -- created lazily, since blink.lib is added to the runtimepath after this module loads
   cmd = function(dispatchers, config)
-    cmd = cmd
+    server = server
       or require('blink.lib.lsp').server({
         name = 'otto',
         capabilities = { completionProvider = { triggerCharacters = { '/', '@' } } },
         handlers = { ['textDocument/completion'] = complete },
       })
-    return cmd(dispatchers, config)
+    return server(dispatchers, config)
   end,
 })
 

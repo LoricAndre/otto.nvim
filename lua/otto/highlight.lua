@@ -1,11 +1,11 @@
--- Treesitter highlights for the transcript and the prompt, since the buffer has no parser of its own. The transcript
+-- Treesitter highlights for the transcript and the input, since the buffer has no parser of its own. The transcript
 -- only changes by appending, so each block highlights once, parsed on its own as its language, when it's first drawn,
--- and changing the prompt only parses the prompt. See PLAN.md
+-- and changing the input only parses the input. See PLAN.md
 
 local M = {}
 
 local ns = vim.api.nvim_create_namespace('otto.highlights')
-local prompt_ns = vim.api.nvim_create_namespace('otto.prompt.highlights')
+local input_ns = vim.api.nvim_create_namespace('otto.input.highlights')
 local pending_ns = vim.api.nvim_create_namespace('otto.highlights.pending')
 
 --- Highlighting of the blocks that haven't been drawn yet, by buffer and by the extmark that spans the block
@@ -179,13 +179,13 @@ function M.diff(bufnr, row, indent, lines, filetype)
   lazily(bufnr, row, #lines, function(first) diff(bufnr, first, indent, lines, lang) end)
 end
 
---- Highlights the prompt as markdown again, after it changed
+--- Highlights the input as markdown again, after it changed
 --- @param bufnr integer
-function M.prompt(bufnr)
+function M.input(bufnr)
   local row = vim.api.nvim_buf_get_mark(bufnr, ':')[1] - 1
-  vim.api.nvim_buf_clear_namespace(bufnr, prompt_ns, row, -1)
+  vim.api.nvim_buf_clear_namespace(bufnr, input_ns, row, -1)
   local lines = vim.api.nvim_buf_get_lines(bufnr, row, -1, false)
-  highlight(bufnr, prompt_ns, below({}, row, 0, #lines), lines, 'markdown')
+  highlight(bufnr, input_ns, below({}, row, 0, #lines), lines, 'markdown')
 end
 
 return M

@@ -5,41 +5,50 @@
 --- @field name string Of the buffers of its sessions, like claude://<id>
 --- @field icon string With the space after it
 --- @field new_id fun(name?: string): string Of a new session
---- @field open fun(id: string, opts: otto.OpenOpts): otto.Handle Starts the agent for the session
---- @field files fun(): { file: string, read: fun(file: string, modified: integer): otto.SessionInfo? }[] Saved sessions
+--- @field open fun(id: string, opts: otto.AgentOpts): otto.Agent Starts the agent for the session
+--- @field files fun(): otto.SessionFile[] Saved sessions
 --- @field names? fun(): table<string, string> Of sessions, when they're kept apart from their files
 
---- @class otto.OpenOpts
+--- @class otto.SessionFile
+--- @field file string
+--- @field parse fun(file: string, modified: integer): otto.SavedSession?
+
+--- @class otto.AgentOpts
 --- @field name? string Display name of a new session
 --- @field config otto.ProviderConfig Of the session's buffer
 --- @field on_log fun(event: otto.Event)
 --- @field on_state fun(patch: otto.StatePatch)
 --- @field on_request fun(request: otto.Request)
 
---- @class otto.Handle A running agent. Its methods that are async run inside tasks, and raise their errors
---- @field replay async fun(self: otto.Handle) Adds the session's history to the log
---- @field prompt fun(self: otto.Handle, text: string, mode: 'steer' | 'follow_up', on_error?: fun(err: string)) With
+--- @class otto.Agent A running agent. Its methods that are async run inside tasks, and raise their errors
+--- @field replay async fun(self: otto.Agent) Adds the session's history to the log
+--- @field prompt fun(self: otto.Agent, text: string, mode: 'steer' | 'follow_up', on_error?: fun(err: string)) With
 --- `on_error` instead of a notification when the agent refuses it
---- @field abort fun(self: otto.Handle)
---- @field take_queue async fun(self: otto.Handle, last?: boolean): string[] Prompts that the agent hasn't read yet,
+--- @field abort fun(self: otto.Agent)
+--- @field take_queue async fun(self: otto.Agent, newest_only?: boolean): string[] Prompts that the agent hasn't read yet,
 --- or only the newest, which it drops
---- @field compact async fun(self: otto.Handle, instructions?: string)
---- @field models async fun(self: otto.Handle): string[]
---- @field set_model async fun(self: otto.Handle, model: string)
---- @field cycle_effort async fun(self: otto.Handle)
---- @field rename async fun(self: otto.Handle, name: string)
---- @field commands async fun(self: otto.Handle): otto.Command[] The agent's own
---- @field fork_points? async fun(self: otto.Handle): { id: string, text: string }[] Prompts to fork from
---- @field fork? async fun(self: otto.Handle, id: string): { id: string, text: string }? The new session's id, and the
+--- @field compact async fun(self: otto.Agent, instructions?: string)
+--- @field models async fun(self: otto.Agent): string[]
+--- @field set_model async fun(self: otto.Agent, model: string)
+--- @field cycle_effort async fun(self: otto.Agent)
+--- @field rename async fun(self: otto.Agent, name: string)
+--- @field commands async fun(self: otto.Agent): otto.AgentCommand[]
+--- @field fork_points? async fun(self: otto.Agent): { id: string, text: string }[] Prompts to fork from
+--- @field fork? async fun(self: otto.Agent, id: string): { id: string, text: string }? The new session's id, and the
 --- prompt to edit
---- @field close fun(self: otto.Handle)
+--- @field close fun(self: otto.Agent)
 
---- @class otto.SessionInfo A saved session
+--- @class otto.AgentCommand The agent's own, like pi's extensions, prompt templates and skills
+--- @field name string
+--- @field description? string
+--- @field arg_hint? string
+
+--- @class otto.SavedSession
 --- @field provider string
 --- @field id string
 --- @field name? string Display name
 --- @field title string Display name, or the first prompt
---- @field messages integer
+--- @field message_count integer
 --- @field modified integer Seconds since the epoch
 
 local M = {}
@@ -55,13 +64,13 @@ M.providers = {
 --- @return otto.Provider?
 function M.get(name) return M.providers[name] end
 
---- @type table<string, { mtime: uv.fs_stat.result.time, cwd: string, info?: otto.SessionInfo }> by file, while unmodified, without the sessions
---- of other folders
+--- @type table<string, { mtime: uv.fs_stat.result.time, cwd: string, saved?: otto.SavedSession }> by file, while
+--- unmodified, without the sessions of other folders
 local cache = {}
 
 --- The current folder's saved sessions, newest first
---- @return otto.SessionInfo[]
-function M.list()
+--- @return otto.SavedSession[]
+function M.saved()
   local sessions = {}
   -- Codex's files are of every folder, and read only those of the current one
   local cwd = vim.fn.getcwd()
@@ -71,15 +80,15 @@ function M.list()
       local cached = cache[file.file]
       -- to the nanosecond, since sessions change more than once a second
       if cached == nil or cached.mtime.sec ~= mtime.sec or cached.mtime.nsec ~= mtime.nsec or cached.cwd ~= cwd then
-        cache[file.file] = { mtime = mtime, cwd = cwd, info = file.read(file.file, mtime.sec) }
+        cache[file.file] = { mtime = mtime, cwd = cwd, saved = file.parse(file.file, mtime.sec) }
       end
-      if cache[file.file].info ~= nil then table.insert(sessions, cache[file.file].info) end
+      if cache[file.file].saved ~= nil then table.insert(sessions, cache[file.file].saved) end
     end
     local names = provider.names and provider.names() or {}
-    for _, info in ipairs(sessions) do
-      if info.provider == provider.name and names[info.id] ~= nil then
-        info.name = names[info.id]
-        info.title = info.name
+    for _, saved in ipairs(sessions) do
+      if saved.provider == provider.name and names[saved.id] ~= nil then
+        saved.name = names[saved.id]
+        saved.title = saved.name
       end
     end
   end

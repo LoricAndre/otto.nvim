@@ -11,7 +11,7 @@ local M = {}
 local function plug(name) return ('<Plug>(otto-%s)'):format(name) end
 
 --- Maps <Plug>(otto-<command>) of every command, which runs it in the current buffer's session
-function M.plug()
+function M.define_plugs()
   for _, command in ipairs(commands.builtin) do
     vim.keymap.set(command.modes or 'n', plug(command.name), function()
       local view = require('otto.view').views[vim.api.nvim_get_current_buf()]
@@ -42,7 +42,7 @@ end
 --- @param lhs string
 --- @param than? string
 --- @return boolean Whether it's the better key to show, the one of fewer keys, like <M-x> over <localleader>x
-local function better(lhs, than)
+local function shorter(lhs, than)
   if than == nil then return true end
   local keys, than_keys = #lhs:gsub('<[^<>]+>', '_'), #than:gsub('<[^<>]+>', '_')
   return keys < than_keys or keys == than_keys and #lhs < #than
@@ -50,7 +50,7 @@ end
 
 --- @param bufnr integer
 --- @return table<string, string> The key of each command that has one in the buffer, for the palette
-function M.keys(bufnr)
+function M.keys_by_command(bufnr)
   local keys = {}
   for _, mode in ipairs({ 'n', 'i' }) do
     local maps = vim.api.nvim_buf_get_keymap(bufnr, mode)
@@ -64,7 +64,7 @@ function M.keys(bufnr)
     end
     for _, map in ipairs(maps) do
       local name = map.rhs and map.rhs:match('^<Plug>%(otto%-(.+)%)$')
-      if name ~= nil and better(map.lhs, keys[name]) then keys[name] = map.lhs end
+      if name ~= nil and shorter(map.lhs, keys[name]) then keys[name] = map.lhs end
     end
   end
   return keys

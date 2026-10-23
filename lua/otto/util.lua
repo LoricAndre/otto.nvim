@@ -6,7 +6,7 @@ function M.notify(message, level) vim.notify('otto: ' .. message, level or vim.l
 
 --- Runs `fn` as a task, notifying its error
 --- @param fn async fun()
-function M.run(fn)
+function M.run_task(fn)
   -- detached, since a task started inside another would report its error twice, and be closed when the other fails
   vim.async.run(fn):detach():on_complete(function(err)
     if err ~= nil then M.notify(tostring(err)) end
@@ -55,7 +55,26 @@ end
 
 --- @param path string
 --- @return string relative to the current folder, or the home folder
-function M.short(path) return vim.fn.fnamemodify(path, ':~:.') end
+function M.short_path(path) return vim.fn.fnamemodify(path, ':~:.') end
+
+--- @param seconds integer
+--- @return string like "2m 10s"
+function M.format_duration(seconds)
+  if seconds < 60 then return seconds .. 's' end
+  if seconds < 3600 then return ('%dm %ds'):format(math.floor(seconds / 60), seconds % 60) end
+  return ('%dh %dm'):format(math.floor(seconds / 3600), math.floor(seconds % 3600 / 60))
+end
+
+local age_units = { { 'mo', 30 * 86400 }, { 'w', 7 * 86400 }, { 'd', 86400 }, { 'h', 3600 }, { 'm', 60 } }
+
+--- @param seconds integer
+--- @return string like "4d"
+function M.format_age(seconds)
+  for _, unit in ipairs(age_units) do
+    if seconds >= unit[2] then return math.floor(seconds / unit[2]) .. unit[1] end
+  end
+  return 'now'
+end
 
 --- @return string random version 4 UUID
 function M.uuid()

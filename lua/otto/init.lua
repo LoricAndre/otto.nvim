@@ -7,7 +7,7 @@ local uri = require('otto.uri')
 local M = {}
 
 --- Merges into the configuration, see `config.lua`
---- @param opts? otto.Config
+--- @param opts? otto.ConfigPartial
 function M.setup(opts) config.set(opts or {}) end
 
 --- Opens a new session
@@ -15,9 +15,9 @@ function M.setup(opts) config.set(opts or {}) end
 --- @param provider? string Defaults to `default_provider`
 function M.new(name, provider)
   provider = provider or config.default_provider
-  local new = uri.unique(provider, providers.get(provider).new_id(name))
-  require('otto.view').names[new] = name
-  vim.cmd.edit(new)
+  local session_uri = uri.unique(provider, providers.get(provider).new_id(name))
+  require('otto.view').pending_names[session_uri] = name
+  vim.cmd.edit(session_uri)
 end
 
 --- Sends a reference to lines of the current file to the most recent session
@@ -50,7 +50,7 @@ function M.append(text, bufnr)
   local line = vim.api.nvim_buf_get_lines(0, -2, -1, false)[1]
   local space = (line == '' or line:match('%s$')) and '' or ' '
   vim.api.nvim_buf_set_text(0, -1, #line, -1, #line, { space .. text .. ' ' })
-  -- in the prompt, which entering insert mode from the transcript would move the cursor to the start of
+  -- in the input, which entering insert mode from the transcript would move the cursor to the start of
   vim.api.nvim_win_set_cursor(0, { vim.api.nvim_buf_line_count(0), 0 })
   vim.cmd.startinsert({ bang = true })
 end
@@ -60,7 +60,7 @@ end
 --- @return string
 function M.statuscolumn()
   local current = require('otto.view').views[vim.api.nvim_win_get_buf(vim.g.statusline_winid)]
-  return current and current.buffer:is_prompt(vim.v.lnum - 1) and '%#OttoPrompt#  ' or '  '
+  return current and current.transcript:is_prompt(vim.v.lnum - 1) and '%#OttoPrompt#  ' or '  '
 end
 
 --- @return string

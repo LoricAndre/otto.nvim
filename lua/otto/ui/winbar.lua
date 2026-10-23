@@ -13,7 +13,7 @@ local separator = item(' | ', 'OttoWinbarSeparator')
 --- @return string like "󰏿 investigate | model: deepseek/deepseek-v4.1-flash | effort: high"
 function M.render(view)
   local state = view.session.state
-  local context = state.context and state.window and state.context / state.window * 100
+  local context = state.context_tokens and state.context_window and state.context_tokens / state.context_window * 100
   local fields = {
     { 'model', state.model },
     { 'effort', state.effort },

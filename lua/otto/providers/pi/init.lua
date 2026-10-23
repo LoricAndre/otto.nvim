@@ -1,8 +1,8 @@
 -- pi: `pi --mode rpc`. Its session files and its events hold the same messages, which `decode.lua` turns into the log.
--- `stream.lua` runs its process, and `files.lua` finds and lists its session files
+-- `agent.lua` runs its process, and `files.lua` finds and lists its session files
 
 local files = require('otto.providers.pi.files')
-local stream = require('otto.providers.pi.stream')
+local agent = require('otto.providers.pi.agent')
 
 local M = { name = 'pi', icon = '󰏿 ' }
 
@@ -17,7 +17,7 @@ function M.new_id(name)
   return id
 end
 
-M.open = stream.open
+M.open = agent.open
 M.files = files.list
 
 return M

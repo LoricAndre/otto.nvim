@@ -1,4 +1,4 @@
--- A session's buffer: its window options, and keeping the prompt and the transcript in place as they change. Its
+-- A session's buffer: its window options, and keeping the input and the transcript in place as they change. Its
 -- keymaps come from the config once the session loads, without mapping over the keys of after/ftplugin/otto.lua
 
 if vim.b.did_ftplugin then return end
@@ -18,7 +18,7 @@ vim.api.nvim_create_autocmd('BufWinEnter', {
   callback = function()
     local wo = vim.wo[0][0]
     wo.foldmethod = 'manual'
-    if view() ~= nil then view().buffer:fold() end
+    if view() ~= nil then view().transcript:fold() end
     wo.foldtext = ''
     wo.conceallevel = 0 -- concealed lines, like code fences, break scrolling
     wo.wrap = true
@@ -34,7 +34,7 @@ vim.api.nvim_create_autocmd('BufWinEnter', {
     local win = vim.api.nvim_get_current_win()
     vim.schedule(function()
       if vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_buf(win) == bufnr then
-        require('otto.ui.prompt_area').watch(win)
+        require('otto.ui.scroll').watch(win)
       end
     end)
   end,
@@ -44,8 +44,8 @@ vim.api.nvim_create_autocmd({ 'TextChanged', 'TextChangedI' }, {
   buffer = bufnr,
   callback = function()
     if view() == nil then return end
-    view().buffer:anchor()
-    require('otto.highlight').prompt(bufnr)
+    view().transcript:anchor()
+    require('otto.highlight').input(bufnr)
   end,
 })
 vim.api.nvim_create_autocmd('InsertEnter', {
@@ -53,10 +53,10 @@ vim.api.nvim_create_autocmd('InsertEnter', {
   buffer = bufnr,
   callback = function()
     if view() == nil then return end
-    -- insert mode opens the fold under the cursor before the prompt buffer moves the cursor to the prompt
-    local prompt_lnum = vim.api.nvim_buf_get_mark(bufnr, ':')[1]
-    if vim.fn.line('.') >= prompt_lnum then return end
-    vim.api.nvim_win_set_cursor(0, { prompt_lnum, 0 })
+    -- insert mode opens the fold under the cursor before the prompt buffer moves the cursor to the input
+    local input_lnum = vim.api.nvim_buf_get_mark(bufnr, ':')[1]
+    if vim.fn.line('.') >= input_lnum then return end
+    vim.api.nvim_win_set_cursor(0, { input_lnum, 0 })
     vim.v.char = 'moved' -- keeps the cursor there, see :help InsertEnter
   end,
 })

@@ -1,5 +1,5 @@
 -- Otto's commands, which its keymaps and the palette (<M-x>) run. The agents' own commands, like pi's extensions,
--- prompt templates and skills, are prompts like "/review", which the palette starts in the prompt
+-- prompt templates and skills, are prompts like "/review", which the palette starts in the input
 
 local history = require('otto.ui.history')
 local layout = require('otto.render.layout')
@@ -13,10 +13,9 @@ local M = {}
 --- @class otto.Command
 --- @field name string
 --- @field description? string
---- @field args? string Describes the argument, of the agents' commands
 --- @field modes? string[] Of its keymaps, normal mode by default
 --- @field expr? boolean Whether it returns the keys to run instead of running, which keeps it out of the palette
---- @field run? async fun(view: otto.View): string? Otto's commands only
+--- @field run async fun(view: otto.View): string?
 --- @field palette? false Whether the palette skips it, like for moving around
 --- @field available? fun(view: otto.View): boolean Commands that only some agents support
 
@@ -32,7 +31,7 @@ function M.open_target(target)
   end
 end
 
---- Puts queued prompts back above what the prompt holds, in the order they were sent
+--- Puts queued prompts back above what the input holds, in the order they were sent
 --- @param view otto.View
 --- @param texts string[]
 local function take_back(view, texts)
@@ -46,7 +45,7 @@ end
 --- @param view otto.View
 --- @param backward boolean
 local function jump_to_prompt(view, backward)
-  local row = view.buffer:find_prompt(vim.fn.line('.') - 1, backward)
+  local row = view.transcript:find_prompt(vim.fn.line('.') - 1, backward)
   if row ~= nil then vim.api.nvim_win_set_cursor(0, { row + 1, 0 }) end
 end
 
@@ -56,7 +55,7 @@ M.builtin = {
     name = 'model',
     description = 'Select a model',
     run = function(view)
-      local models = view.session.handle:models()
+      local models = view.session.agent:models()
       -- pi's models are listed with their provider, and its state has their id
       local function current(id)
         return id == view.session.state.model or vim.endswith(id, '/' .. (view.session.state.model or ''))
@@ -70,7 +69,7 @@ M.builtin = {
           return { { current(id) and '● ' or '  ', 'OttoStatus' }, { id } }, notes
         end,
         on_accept = function(id)
-          util.run(function() view.session.handle:set_model(id) end)
+          util.run_task(function() view.session.agent:set_model(id) end)
         end,
       })
     end,
@@ -78,7 +77,7 @@ M.builtin = {
   {
     name = 'effort',
     description = 'Cycle thinking level',
-    run = function(view) view.session.handle:cycle_effort() end, -- the winbar shows the level
+    run = function(view) view.session.agent:cycle_effort() end, -- the winbar shows the level
   },
   {
     name = 'compact',
@@ -86,7 +85,7 @@ M.builtin = {
     run = function(view)
       local instructions = util.input({ prompt = 'Compact instructions (optional): ' })
       if instructions == nil then return end
-      view.session.handle:compact(vim.trim(instructions) ~= '' and instructions or nil)
+      view.session.agent:compact(vim.trim(instructions) ~= '' and instructions or nil)
     end,
   },
   {
@@ -95,7 +94,7 @@ M.builtin = {
     run = function(view)
       local name = util.input({ prompt = 'Name: ', default = view.session.state.name })
       if name == nil or vim.trim(name) == '' then return end
-      view.session.handle:rename(vim.trim(name))
+      view.session.agent:rename(vim.trim(name))
     end,
   },
   {
@@ -119,7 +118,7 @@ M.builtin = {
   {
     name = 'rewind',
     description = 'Rewind the session to an earlier prompt, keeping the session it leaves saved',
-    available = function(view) return view.session.handle.fork ~= nil end,
+    available = function(view) return view.session.agent.fork ~= nil end,
     run = function(view) prompts.pick(view, true) end,
   },
   {
@@ -142,7 +141,7 @@ M.builtin = {
     name = 'edits',
     description = 'Edits of the session to quickfix',
     run = function(view)
-      local edits = layout.edits(view.session.events)
+      local edits = layout.quickfix_edits(view.session.events)
       vim.fn.setqflist({}, ' ', { title = view.session.state.id .. ' edits', items = edits })
       vim.cmd.copen()
     end,
@@ -152,8 +151,8 @@ M.builtin = {
     description = 'Stop the agent, taking back the queued prompts',
     run = function(view)
       -- first, since the agent would go on with them
-      take_back(view, view.session.handle:take_queue())
-      view.session.handle:abort()
+      take_back(view, view.session.agent:take_queue())
+      view.session.agent:abort()
     end,
   },
   {
@@ -161,7 +160,7 @@ M.builtin = {
     description = 'Open the location under the cursor, or submit',
     expr = true,
     run = function(view)
-      local target = view.buffer:target_at(vim.fn.line('.') - 1)
+      local target = view.transcript:target_at(vim.fn.line('.') - 1)
       if target == nil then return 'A<CR><Esc>' end
       vim.schedule(function() M.open_target(target) end) -- windows can't change while the mapping evaluates
       return ''
@@ -220,7 +219,7 @@ M.builtin = {
     run = function(view)
       local count = vim.v.count1
       -- like when the agent read them meanwhile
-      local texts = #view.session.state.queue > 0 and view.session.handle:take_queue(true) or {}
+      local texts = #view.session.state.queue > 0 and view.session.agent:take_queue(true) or {}
       if #texts == 0 then return history.step(view, count) end
       take_back(view, texts)
     end,
@@ -264,11 +263,11 @@ function M.run(view, name)
     return util.notify(name .. " isn't supported by " .. view.session.provider.name)
   end
   if command.expr then return command.run(view) end
-  util.run(function() command.run(view) end)
+  util.run_task(function() command.run(view) end)
 end
 
 --- @param view otto.View
---- @return otto.Command[] The agent's own, without those of the same name as otto's
+--- @return otto.AgentCommand[] Without those of the same name as otto's
 function M.agent_commands(view)
   local builtin = {}
   for _, command in ipairs(M.available(view)) do
@@ -277,13 +276,13 @@ function M.agent_commands(view)
   return vim.tbl_filter(function(command) return not builtin[command.name] end, view.session.state.commands)
 end
 
---- Picks a command. Otto's run, and the agent's start in the prompt, to finish writing
+--- Picks a command. Otto's run, and the agent's start in the input, to finish writing
 --- @param view otto.View
 function M.palette(view)
-  local keys = require('otto.ui.keymaps').keys(view.bufnr)
+  local keys = require('otto.ui.keymaps').keys_by_command(view.bufnr)
 
   --- @class otto.PaletteItem
-  --- @field command otto.Command
+  --- @field command otto.Command | otto.AgentCommand
   --- @field builtin boolean
 
   local items = {} --- @type otto.PaletteItem[]
@@ -298,7 +297,7 @@ function M.palette(view)
   local function format(item)
     local command = item.command
     local chunks = { { item.builtin and command.name or '/' .. command.name, 'OttoToolName' } }
-    if command.args then table.insert(chunks, { ' ' .. command.args, 'OttoToolArg' }) end
+    if command.arg_hint then table.insert(chunks, { ' ' .. command.arg_hint, 'OttoToolArg' }) end
     if command.description then table.insert(chunks, { '  ' .. command.description:gsub('\n.*', ''), 'Comment' }) end
     local key = item.builtin and keys[command.name]
     return chunks, key and { { key, 'OttoToolDetail' } } or nil
@@ -308,7 +307,7 @@ function M.palette(view)
   local function run(item)
     local name = item.command.name
     if item.builtin then return M.run(view, name) end
-    -- before what the prompt holds, which becomes its argument
+    -- before what the input holds, which becomes its argument
     local row = vim.api.nvim_buf_get_mark(view.bufnr, ':')[1]
     vim.api.nvim_buf_set_text(view.bufnr, row - 1, 0, row - 1, 0, { '/' .. name .. ' ' })
     if vim.api.nvim_get_current_buf() ~= view.bufnr then return end

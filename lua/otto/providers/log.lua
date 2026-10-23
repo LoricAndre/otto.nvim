@@ -8,12 +8,12 @@ local event = require('otto.event')
 --- @class otto.Log
 --- @field emit fun(event: otto.Event)
 --- @field on_state fun(patch: otto.StatePatch)
---- @field turn boolean Whether a turn is running
+--- @field in_turn boolean
 --- @field started? integer When the turn started
 --- @field worked boolean Whether the agent did anything in the turn
---- @field at? integer Of the last event of the turn, which ends it
+--- @field last_at? integer Of the last event of the turn, which ends it
 --- @field answered boolean Whether the agent answered, or failed, since its last tool, so that a prompt ends the turn
---- @field interrupted boolean Whether the turn ends aborted
+--- @field aborted boolean Whether the turn ends aborted
 local Log = {}
 Log.__index = Log
 
@@ -24,7 +24,7 @@ local M = {}
 --- @return otto.Log
 function M.new(emit, on_state)
   return setmetatable(
-    { emit = emit, on_state = on_state, turn = false, worked = false, answered = false, interrupted = false },
+    { emit = emit, on_state = on_state, in_turn = false, worked = false, answered = false, aborted = false },
     Log
   )
 end
@@ -34,48 +34,45 @@ end
 --- @param at? integer Now by default
 function Log:push(fields, at)
   fields.at = at or event.now()
-  if not self.turn then
-    self.turn = true
+  if not self.in_turn then
+    self.in_turn = true
     self.started = fields.at
     self.worked = false
     self.answered = false
-    self.interrupted = false
+    self.aborted = false
   end
   if fields.type ~= 'user' then self.worked = true end
-  self.at = fields.at
+  self.last_at = fields.at
   self.emit(fields)
 end
 
 --- Ends the turn, when one is running
 --- @param aborted? boolean
 --- @param at? integer Of the last event by default
-function Log:settle(aborted, at)
-  if not self.turn then return end
-  self.turn = false
+function Log:end_turn(aborted, at)
+  if not self.in_turn then return end
+  self.in_turn = false
   self.emit({
     type = 'turn_end',
-    aborted = aborted or self.interrupted,
+    aborted = aborted or self.aborted,
     started = self.started,
     worked = self.worked,
-    at = at or self.at,
+    at = at or self.last_at,
   })
 end
 
---- At the end of the session file
-function Log:finish() self:settle() end
-
 --- The turn ends aborted, like when the user interrupts the agent
-function Log:interrupt() self.interrupted = true end
+function Log:mark_aborted() self.aborted = true end
 
 --- Something that the agent reads like a prompt, which ends the turn when the agent answered
-function Log:prompted()
-  if self.answered or self.interrupted then self:settle() end
+function Log:interject()
+  if self.answered or self.aborted then self:end_turn() end
 end
 
 --- @param text string
 --- @param at? integer
 function Log:user(text, at)
-  self:prompted()
+  self:interject()
   self:push({ type = 'user', text = text }, at)
   self.answered = false
 end
@@ -123,6 +120,6 @@ end
 
 --- What the session runs with, which the history has too
 --- @param patch otto.StatePatch
-function Log:state(patch) self.on_state(patch) end
+function Log:patch_state(patch) self.on_state(patch) end
 
 return M

@@ -8,7 +8,7 @@ local M = {}
 
 --- @param item table commandExecution
 --- @return string like "cat a.txt", without the `bash -lc` that Codex runs it with
-local function command(item)
+local function unwrap_shell(item)
   local quoted = item.command:match('^%S+ %-lc (.+)$')
   if quoted == nil then return item.command end
   -- with the single quotes inside it unescaped, which are '"'"'
@@ -31,12 +31,12 @@ local function shell_tool(item)
   end
   if action.type == 'listFiles' then return 'ls', { path = action.path or '.' } end
   if action.type == 'search' then return 'grep', { pattern = action.query or action.command, path = action.path } end
-  return 'bash', { command = command(item) }
+  return 'bash', { command = unwrap_shell(item) }
 end
 
 --- @param change { diff: string, kind: { type: string } }
 --- @return otto.DiffLine[]
-local function diff_lines(change)
+local function parse_diff(change)
   local lines = {}
   local old = 1
   local new = 1
@@ -59,8 +59,11 @@ local function diff_lines(change)
   return lines
 end
 
---- @class otto.CodexContext What decoding items needs of the thread
+--- @class otto.CodexDecoder What the decoder keeps of the thread between items
 --- @field agents table<string, table> Args of the tools that started subagents, by thread
+
+--- @return otto.CodexDecoder
+function M.new() return { agents = {} } end
 
 --- Tool calls of an item, of which file changes have one per file
 --- @param item table
@@ -83,7 +86,7 @@ function M.calls(item)
 end
 
 --- @param item table
---- @return table[] results, see `otto.Log.tool_result`
+--- @return table[] results, see `otto.Log:tool_result`
 local function results(item)
   if item.type == 'commandExecution' then
     local ok = item.status == 'completed' and (item.exitCode or 0) == 0
@@ -99,55 +102,55 @@ local function results(item)
   return vim
     .iter(ipairs(item.changes))
     :map(function(i, change)
-      local diff = ok and change.kind.type ~= 'add' and diff_lines(change) or nil
+      local diff = ok and change.kind.type ~= 'add' and parse_diff(change) or nil
       return { id = item.id .. ':' .. i, ok = ok, output = '', diff = diff }
     end)
     :totable()
 end
 
 --- Subagents, which Codex's history only has the starts and ends of, the end as a second result of the tool
---- @param session_log otto.Log
+--- @param log otto.Log
+--- @param decoder otto.CodexDecoder
 --- @param item table subAgentActivity
---- @param context otto.CodexContext
 --- @param at? integer
-local function activity(session_log, item, context, at)
+local function activity(log, decoder, item, at)
   local thread = item.agentThreadId
   if item.kind == 'started' then
     -- named after their paths, since their nicknames are on their threads
     local name = vim.fs.basename(item.agentPath or '')
     name = name ~= '' and name or thread:sub(-8)
-    context.agents[thread] = { description = name, type = item.model, background = true }
+    decoder.agents[thread] = { description = name, type = item.model, background = true }
   end
-  local args = context.agents[thread]
+  local args = decoder.agents[thread]
   if args == nil or item.kind == 'interacted' then return end
   local ok = item.kind == 'started' or item.kind == 'completed'
-  session_log:tool_call(item.id, 'agent', args, at)
-  session_log:tool_result({ id = item.id, ok = ok, output = '' }, at)
+  log:tool_call(item.id, 'agent', args, at)
+  log:tool_result({ id = item.id, ok = ok, output = '' }, at)
 end
 
 --- Adds a completed item to the log, of which the tool calls may have been added when it started
---- @param session_log otto.Log
+--- @param log otto.Log
+--- @param decoder otto.CodexDecoder
 --- @param item table
 --- @param announced table<string, true> Tool calls in the log already
---- @param context otto.CodexContext
 --- @param at? integer
-function M.add(session_log, item, announced, context, at)
-  if item.type == 'userMessage' then return session_log:user(vim.trim(event.text_of(item.content)), at) end
+function M.add(log, decoder, item, announced, at)
+  if item.type == 'userMessage' then return log:user(vim.trim(event.text_of(item.content)), at) end
   if item.type == 'agentMessage' then
     -- prompts after commentary steer the turn, which only ends when Codex says so
-    if vim.trim(item.text) ~= '' then session_log:text(vim.trim(item.text), at, item.phase == 'commentary') end
+    if vim.trim(item.text) ~= '' then log:text(vim.trim(item.text), at, item.phase == 'commentary') end
     return
   end
   -- Codex keeps the summary to itself
-  if item.type == 'contextCompaction' then return session_log:compaction({}, at) end
-  if item.type == 'subAgentActivity' then return activity(session_log, item, context, at) end
+  if item.type == 'contextCompaction' then return log:compaction({}, at) end
+  if item.type == 'subAgentActivity' then return activity(log, decoder, item, at) end
   for _, call in ipairs(M.calls(item)) do
-    if not announced[call.id] then session_log:tool_call(call.id, call.tool, call.args, at) end
+    if not announced[call.id] then log:tool_call(call.id, call.tool, call.args, at) end
     announced[call.id] = nil
   end
   for _, result in ipairs(results(item)) do
     -- commands say how long they ran, which shows once they take a while
-    session_log:tool_result(result, at and item.durationMs and at + item.durationMs or at)
+    log:tool_result(result, at and item.durationMs and at + item.durationMs or at)
   end
 end
 

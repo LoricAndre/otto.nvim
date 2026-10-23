@@ -1,12 +1,12 @@
 -- History of prompts, of every session and folder, which <M-p> and <M-n> step through for the current folder. What the
--- prompt held when it was left is kept, the draft included, until the next submit. Unsent prompts are saved when
+-- input held when it was left is kept, the draft included, until the next submit. Unsent prompts are saved when
 -- their buffer unloads, and come back when the session opens again
 
 local pick = require('otto.ui.pick')
-local prompt_area = require('otto.ui.prompt_area')
+local scroll = require('otto.ui.scroll')
 local util = require('otto.util')
 
-local path = vim.fn.stdpath('state') .. '/otto/history.jsonl'
+local history_path = vim.fn.stdpath('state') .. '/otto/history.jsonl'
 local drafts_path = vim.fn.stdpath('state') .. '/otto/drafts.json'
 local draft_days = 30 -- before a draft is dropped, like those of sessions that were never saved
 
@@ -19,7 +19,7 @@ local draft_days = 30 -- before a draft is dropped, like those of sessions that 
 --- @class otto.Recall Where a session is in the history
 --- @field entries otto.HistoryEntry[] Newest first, from when it started, with the draft at 0
 --- @field index integer
---- @field edits table<otto.HistoryEntry, string> What the prompt held when it left an entry
+--- @field edits table<otto.HistoryEntry, string> What the input held when it left an entry
 
 local M = {}
 
@@ -29,13 +29,13 @@ local offset = 0 -- bytes of the file read so far
 
 --- Reads what other instances and sessions added since the last read
 local function load()
-  local stat = vim.uv.fs_stat(path)
+  local stat = vim.uv.fs_stat(history_path)
   if stat == nil or stat.size == offset then return end
   -- like when it was replaced
   if stat.size < offset then
     entries, offset = {}, 0
   end
-  local file = io.open(path, 'r')
+  local file = io.open(history_path, 'r')
   if file == nil then return end
   file:seek('set', offset)
   local data = file:read('*a')
@@ -55,8 +55,8 @@ end
 function M.add(text, session)
   -- a leading space keeps it out, like in shells
   if text:match('^%s') or vim.trim(text) == '' then return end
-  vim.fn.mkdir(vim.fs.dirname(path), 'p')
-  local file = io.open(path, 'a')
+  vim.fn.mkdir(vim.fs.dirname(history_path), 'p')
+  local file = io.open(history_path, 'a')
   if file == nil then return end
   -- read back by `load`, like those of other instances
   file:write(
@@ -82,17 +82,17 @@ end
 
 --- @param bufnr integer
 --- @param text string
-local function set_prompt(bufnr, text)
+local function set_input(bufnr, text)
   local row = vim.api.nvim_buf_get_mark(bufnr, ':')[1] - 1
   local lines = vim.split(text, '\n')
   vim.bo[bufnr].undolevels = vim.bo[bufnr].undolevels -- its own undo step, so that `u` brings back what was there
   vim.api.nvim_buf_set_lines(bufnr, row, -1, false, lines)
   if vim.api.nvim_get_current_buf() ~= bufnr then return end
   vim.api.nvim_win_set_cursor(0, { vim.api.nvim_buf_line_count(bufnr), #lines[#lines] })
-  prompt_area.follow(bufnr)
+  scroll.follow(bufnr)
 end
 
---- Keeps what the prompt holds, when it changed from the entry it shows
+--- Keeps what the input holds, when it changed from the entry it shows
 --- @param view otto.View
 local function leave(view)
   local recall = view.recall
@@ -125,10 +125,10 @@ function M.step(view, count)
   leave(view)
   recall.index = index
   local entry = recall.entries[index]
-  set_prompt(view.bufnr, recall.edits[entry] or entry.text)
+  set_input(view.bufnr, recall.edits[entry] or entry.text)
 end
 
---- Puts text into the prompt, keeping what it held like stepping does, so that <M-n> brings it back
+--- Puts text into the input, keeping what it held like stepping does, so that <M-n> brings it back
 --- @param view otto.View
 --- @param entry otto.HistoryEntry | { text: string } Of the history, or of somewhere else, like a prompt to edit
 function M.insert(view, entry)
@@ -144,7 +144,7 @@ function M.insert(view, entry)
     recall.index = 1
   end
   recall.edits[entry] = nil
-  set_prompt(view.bufnr, entry.text)
+  set_input(view.bufnr, entry.text)
 end
 
 --- Writes the file whole, renamed into place so that another instance never reads half of it
@@ -160,7 +160,7 @@ local function write(file_path, data)
   vim.uv.fs_rename(temp, file_path)
 end
 
---- Picks a prompt from the history into the prompt, which shows the one under the cursor
+--- Picks a prompt from the history into the input, which shows the one under the cursor
 --- @param view otto.View
 --- @param all boolean Of every folder
 function M.pick(view, all)
@@ -182,8 +182,8 @@ function M.pick(view, all)
     local lines = vim.split(entry.text, '\n')
     local chunks = { { lines[1] } }
     if #lines > 1 then table.insert(chunks, { ('  +%d lines'):format(#lines - 1), 'Comment' }) end
-    local notes = { { pick.age(os.time() - entry.at), 'Comment' } }
-    if all then table.insert(notes, 1, { util.short(entry.cwd) .. '  ', 'OttoPath' }) end
+    local notes = { { util.format_age(os.time() - entry.at), 'Comment' } }
+    if all then table.insert(notes, 1, { util.short_path(entry.cwd) .. '  ', 'OttoPath' }) end
     return chunks, notes
   end
 
@@ -224,19 +224,19 @@ function M.save_drafts(bufnrs)
   write(drafts_path, vim.json.encode(drafts))
 end
 
---- Puts back the unsent prompt of the session's buffer, unless the prompt has text already, like after a restart
+--- Puts back the unsent prompt of the session's buffer, unless the input has text already, like after a restart
 --- @param bufnr integer
 function M.restore_draft(bufnr)
   local drafts = read_drafts()
   local name = vim.api.nvim_buf_get_name(bufnr)
   if drafts[name] == nil then return end
-  if vim.fn.prompt_getinput(bufnr) == '' then set_prompt(bufnr, drafts[name].text) end
-  -- back in the prompt, which saves it again when its buffer unloads, unless it's sent
+  if vim.fn.prompt_getinput(bufnr) == '' then set_input(bufnr, drafts[name].text) end
+  -- back in the input, which saves it again when its buffer unloads, unless it's sent
   drafts[name] = nil
   write(drafts_path, vim.json.encode(drafts))
 end
 
---- Forgets where the session was in the history, and what the prompt held, once it submits
+--- Forgets where the session was in the history, and what the input held, once it submits
 --- @param view otto.View
 function M.reset(view) view.recall = nil end
 

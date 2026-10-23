@@ -1,6 +1,7 @@
 -- Pickers, in minibuffer.nvim when it's set up, with notes aligned on the right and previews. Otherwise in
 -- `vim.ui.select`, without them
 
+local tools = require('otto.render.tools')
 local util = require('otto.util')
 
 --- @class otto.Picker
@@ -12,23 +13,6 @@ local util = require('otto.util')
 --- @field on_accept fun(item: any)
 
 local M = {}
-
-local units = { { 'mo', 30 * 86400 }, { 'w', 7 * 86400 }, { 'd', 86400 }, { 'h', 3600 }, { 'm', 60 } }
-
---- @param seconds integer
---- @return string like "4d"
-function M.age(seconds)
-  for _, unit in ipairs(units) do
-    if seconds >= unit[2] then return math.floor(seconds / unit[2]) .. unit[1] end
-  end
-  return 'now'
-end
-
---- @param chunks otto.Chunks
---- @return string
-local function text(chunks)
-  return table.concat(vim.tbl_map(function(chunk) return chunk[1] end, chunks))
-end
 
 --- Truncates the chunks to the width, and pads them up to it
 --- @param chunks otto.Chunks
@@ -87,7 +71,7 @@ end
 local function fallback(picker)
   local function format_item(item)
     local chunks, notes = picker.format(item)
-    return text(chunks) .. (notes and '  ' .. text(notes) or '')
+    return tools.join(chunks) .. (notes and '  ' .. tools.join(notes) or '')
   end
   vim.ui.select(picker.items, { prompt = picker.prompt, format_item = format_item }, function(item)
     if item ~= nil then picker.on_accept(item) end
@@ -101,7 +85,7 @@ function M.select(picker)
 
   local texts = {} --- @type table<any, string>
   for _, item in ipairs(picker.items) do
-    texts[item] = picker.text and picker.text(item) or text((picker.format(item)))
+    texts[item] = picker.text and picker.text(item) or tools.join((picker.format(item)))
   end
   local previewed --- @type any
   local function preview(item)
@@ -119,7 +103,7 @@ function M.select(picker)
       local chunks, notes = picker.format(item)
       notes = notes or {}
       -- less the margins of the window
-      local width = vim.o.columns - 4 - vim.api.nvim_strwidth(text(notes))
+      local width = vim.o.columns - 4 - vim.api.nvim_strwidth(tools.join(notes))
       local line = vim.list_extend(fit(chunks, width), { { '  ' } })
       return vim.tbl_map(function(chunk) return { text = chunk[1], hl = chunk[2] } end, vim.list_extend(line, notes))
     end,
@@ -130,10 +114,10 @@ function M.select(picker)
   })
 end
 
---- Picks an open session, most recently used first but the visible ones and then the current one last. With `saved`,
---- the saved sessions of the current folder too, below the open ones
---- @param saved? boolean
-function M.sessions(saved)
+--- Picks an open session, most recently used first but the visible ones and then the current one last. With
+--- `with_saved`, the saved sessions of the current folder too, below the open ones
+--- @param with_saved? boolean
+function M.sessions(with_saved)
   local providers = require('otto.providers')
   local views = require('otto.view').views
 
@@ -142,7 +126,7 @@ function M.sessions(saved)
   --- @field provider string
   --- @field title string
   --- @field view? otto.View When it's open
-  --- @field info? otto.SessionInfo When it's saved
+  --- @field saved? otto.SavedSession When it's saved
 
   local current = vim.api.nvim_get_current_buf()
   local visible = {} --- @type table<integer, boolean>
@@ -151,7 +135,7 @@ function M.sessions(saved)
   end
   --- @param bufnr integer
   local function rank(bufnr)
-    if saved then return 0 end
+    if with_saved then return 0 end
     return bufnr == current and 2 or visible[bufnr] and 1 or 0
   end
 
@@ -170,13 +154,13 @@ function M.sessions(saved)
       table.insert(list, item)
       by_uri[buf.name] = item
     end
-    for _, info in ipairs(saved and providers.list() or {}) do
-      local uri = require('otto.uri').format(info.provider, info.id)
+    for _, saved in ipairs(with_saved and providers.saved() or {}) do
+      local uri = require('otto.uri').format(saved.provider, saved.id)
       local item = by_uri[uri]
       if item == nil then
-        table.insert(list, { uri = uri, provider = info.provider, title = info.title, info = info })
+        table.insert(list, { uri = uri, provider = saved.provider, title = saved.title, saved = saved })
       else
-        item.title, item.info = item.title or info.title, info
+        item.title, item.saved = item.title or saved.title, saved
       end
     end
     return list
@@ -190,14 +174,15 @@ function M.sessions(saved)
     local chunks = { { providers.get(item.provider).icon, 'OttoWinbarIcon' }, { item.title or id } }
     local notes = {}
     local state = item.view and item.view.session.state
-    if state and state.working then
-      local elapsed = math.floor((vim.uv.now() - state.since) / 1000)
-      table.insert(notes, { state.working .. ' ' .. require('otto.render.tools').duration(elapsed), 'OttoStatus' })
-    elseif state and saved then
+    if state and state.status then
+      local elapsed = math.floor((vim.uv.now() - state.status_since) / 1000)
+      table.insert(notes, { state.status .. ' ' .. util.format_duration(elapsed), 'OttoStatus' })
+    elseif state and with_saved then
       table.insert(notes, { 'open', 'OttoStatus' })
     end
-    if item.info then
-      table.insert(notes, { (' %3d msgs %4s'):format(item.info.messages, M.age(os.time() - item.info.modified)) })
+    if item.saved then
+      local age = util.format_age(os.time() - item.saved.modified)
+      table.insert(notes, { (' %3d msgs %4s'):format(item.saved.message_count, age) })
     end
     table.insert(notes, { '  ' .. short, 'Comment' })
     return chunks, notes

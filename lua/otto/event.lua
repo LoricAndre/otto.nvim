@@ -54,10 +54,10 @@ local M = {}
 --- @field name? string
 --- @field model? string
 --- @field effort? string
---- @field window? integer Size of the context window
---- @field context? integer Tokens in the context, as of the last answer or compaction
+--- @field context_window? integer
+--- @field context_tokens? integer Tokens in the context, as of the last answer or compaction
 --- @field cost? number Dollars, for the whole session
---- @field working? 'working' | 'thinking' | 'compacting' | false False once the agent stopped
+--- @field status? 'working' | 'thinking' | 'compacting' | false False once the agent stopped
 --- @field queue? otto.Queued[] Prompts that the agent hasn't read yet, including the one that was just sent
 
 --- @class otto.Queued
@@ -74,7 +74,7 @@ local M = {}
 --- @param steering? string[]
 --- @param follow_up? string[]
 --- @return otto.Queued[]
-function M.queued(steering, follow_up)
+function M.queue(steering, follow_up)
   local queue = {}
   for _, text in ipairs(steering or {}) do
     table.insert(queue, { text = text, follow_up = false })
@@ -107,7 +107,7 @@ end
 
 --- @param iso? string in UTC, like 2026-10-21T17:15:04.312Z
 --- @return integer? milliseconds since the epoch
-function M.time(iso)
+function M.parse_iso(iso)
   if iso == nil then return nil end
   local year, month, day, hour, min, sec, ms = iso:match('^(%d+)-(%d+)-(%d+)T(%d+):(%d+):(%d+)%.?(%d*)Z$')
   if year == nil then return nil end

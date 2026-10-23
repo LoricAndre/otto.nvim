@@ -3,11 +3,12 @@
 -- summary on the line above the first. See `buffer.lua` for where they go
 
 local tools = require('otto.render.tools')
+local util = require('otto.util')
 
 local M = {}
 
-local nested = '  ' -- indent of the tools in a group
-local slow = 15 -- seconds that commands run for before their headers keep how long they ran
+local group_indent = '  ' -- of the tools in a group
+local slow_command = 15 -- seconds that commands run for before their headers keep how long they ran
 local body_indent = '  ' -- of the lines below the header of a tool
 M.body_indent = body_indent
 
@@ -34,7 +35,7 @@ M.body_indent = body_indent
 
 --- @class otto.BlockHighlight
 --- @field index integer Of the line in the block, from 0
---- @field group string
+--- @field hl_group string
 --- @field col? integer Of the whole line by default
 --- @field end_col? integer To the end of the line by default
 
@@ -47,11 +48,11 @@ M.body_indent = body_indent
 --- @field col? integer Where the location starts in the lines
 
 --- @class otto.Op
---- @field type 'block' | 'settle' Settling folds the groups of the turn, which stay open while it runs
+--- @field type 'block' | 'turn_end' Folds the groups of the turn, which stay open while it runs
 --- @field block? otto.Block
 
 --- @class otto.Layout
---- @field tail? 'user' | 'text' | 'tool' | 'error' | 'note' Kind of the last block, which spaces the next one
+--- @field last_kind? 'user' | 'text' | 'tool' | 'error' | 'note' Kind of the last block, which spaces the next one
 --- @field group? { tools: string[], failed: integer } Tools since the last block of another kind
 --- @field calls table<string, { tool: string, args: table, at?: integer }> Tool calls by id, until their result arrives
 local Layout = {}
@@ -64,11 +65,11 @@ function M.new() return setmetatable({ calls = {} }, Layout) end
 --- @return otto.Op[]
 function Layout:block(block)
   -- tools go right below the text that explains them, and below each other
-  block.spaced = not (block.kind == 'tool' and (self.tail == 'tool' or self.tail == 'text'))
+  block.spaced = not (block.kind == 'tool' and (self.last_kind == 'tool' or self.last_kind == 'text'))
   block.highlights = block.highlights or {}
   block.targets = block.targets or {}
   if block.group == nil then self.group = nil end
-  self.tail = block.kind
+  self.last_kind = block.kind
   return { { type = 'block', block = block } }
 end
 
@@ -90,7 +91,7 @@ local function tool_lines(header, sections, indent, highlights, targets)
     end
     local count = #section.lines
     if section.path and count > 0 then
-      table.insert(targets, { index = before + 1, count = count, path = section.path, lnum = section.first })
+      table.insert(targets, { index = before + 1, count = count, path = section.path, lnum = section.lnum })
     end
     if section.locations and count > 0 then
       table.insert(targets, { index = before + 1, count = count, parse = 'location', col = col })
@@ -98,13 +99,13 @@ local function tool_lines(header, sections, indent, highlights, targets)
     for _, location in ipairs(section.locations and tools.locations(section.lines) or {}) do
       local index = before + location.index
       local path_end = col + #location.path
-      table.insert(highlights, { index = index, col = col, end_col = path_end, group = 'OttoPath' })
+      table.insert(highlights, { index = index, col = col, end_col = path_end, hl_group = 'OttoPath' })
       local lnum_end = path_end + 1 + location.width
-      table.insert(highlights, { index = index, col = path_end + 1, end_col = lnum_end, group = 'OttoLineNumber' })
+      table.insert(highlights, { index = index, col = path_end + 1, end_col = lnum_end, hl_group = 'OttoLineNumber' })
     end
-    if (section.hidden or 0) > 0 then
-      table.insert(lines, ('%s%s... %d more lines'):format(indent, body_indent, section.hidden))
-      table.insert(highlights, { index = #lines - 1, col = col, group = 'OttoToolDetail' })
+    if (section.truncated or 0) > 0 then
+      table.insert(lines, ('%s%s... %d more lines'):format(indent, body_indent, section.truncated))
+      table.insert(highlights, { index = #lines - 1, col = col, hl_group = 'OttoToolDetail' })
     end
   end
   return lines
@@ -152,14 +153,14 @@ end
 --- Files that the agent edited, at the first changed line, for the quickfix list
 --- @param events otto.Event[] The log
 --- @return vim.quickfix.entry[]
-function M.edits(events)
+function M.quickfix_edits(events)
   local calls, edits = {}, {}
   for _, event in ipairs(events) do
-    if event.type == 'tool_call' then calls[event.id] = tools.call(event.tool, event.args) end
+    if event.type == 'tool_call' then calls[event.id] = tools.display_call(event.tool, event.args) end
     local call = event.type == 'tool_result' and event.diff ~= nil and calls[event.id]
     -- which results without a call don't have
     if call and call.args.path ~= nil then
-      local _, first_changed = tools.diff_lines(event.diff)
+      local _, first_changed = tools.format_diff(event.diff)
       local text = tools.join(diff_header(call, event.diff))
       table.insert(edits, { filename = call.args.path, lnum = first_changed or 1, text = text })
     end
@@ -173,7 +174,7 @@ end
 --- @return otto.Op[]
 function Layout:diff(call, diff)
   local header = diff_header(call, diff)
-  local lines, first_changed = tools.diff_lines(diff)
+  local lines, first_changed = tools.format_diff(diff)
   local path = call.args.path
 
   local targets = path
@@ -187,8 +188,8 @@ function Layout:diff(call, diff)
   block.diff = { filetype = path and vim.filetype.match({ filename = path }) }
   block.call = { tool = call.tool, args = call.args }
   for i, line in ipairs(diff) do
-    local group = line.sign == '+' and 'DiffAdd' or line.sign == '-' and 'DiffDelete' or nil
-    if group ~= nil then table.insert(block.highlights, { index = i, group = group }) end
+    local hl_group = line.sign == '+' and 'DiffAdd' or line.sign == '-' and 'DiffDelete' or nil
+    if hl_group ~= nil then table.insert(block.highlights, { index = i, hl_group = hl_group }) end
   end
   return ops
 end
@@ -208,11 +209,11 @@ function Layout:grouped(tool, failed, header, sections, count)
   if failed then group.failed = group.failed + 1 end
 
   local highlights, targets = {}, {}
-  local lines = tool_lines(header, sections, nested, highlights, targets)
+  local lines = tool_lines(header, sections, group_indent, highlights, targets)
   local ops = self:block({
     kind = 'tool',
     lines = lines,
-    indent = nested,
+    indent = group_indent,
     header = header,
     sections = sections,
     highlights = highlights,
@@ -240,17 +241,17 @@ function Layout:tool_result(result)
     table.insert(header, { ('  +%d'):format(#lines), 'Added' })
     -- all of them, since the block folds
     local section =
-      { lines = lines, filetype = vim.filetype.match({ filename = args.path }), path = args.path, first = 1 }
+      { lines = lines, filetype = vim.filetype.match({ filename = args.path }), path = args.path, lnum = 1 }
     local ops = self:tool_block('tool', header, { section }, { { index = 0, path = args.path } })
     ops[1].block.call = { tool = tool, args = args }
     return ops
   end
 
-  local section = tools.output_of(tool, args, result.output or '')
+  local section = tools.output_section(tool, args, result.output or '')
   local lines = section.lines
   local seconds = call.at and math.floor((result.at - call.at) / 1000)
-  if tool == 'bash' and seconds and seconds >= slow then
-    table.insert(header, { '  ' .. tools.duration(seconds), 'OttoStatusTime' })
+  if tool == 'bash' and seconds and seconds >= slow_command then
+    table.insert(header, { '  ' .. util.format_duration(seconds), 'OttoStatusTime' })
   end
   local code = result.exit_code
   -- tools only say how they ended when they fail
@@ -264,12 +265,12 @@ function Layout:tool_result(result)
   -- the header only shows the description or first line of commands
   local command = tool == 'bash' and split(vim.trim(args.command))
   if command and (#command > 1 or args.description ~= nil) then
-    table.insert(sections, 1, tools.output(command, 'bash'))
+    table.insert(sections, 1, tools.section(command, 'bash'))
   end
   local ops = self:grouped(tool, not result.ok, header, sections, count)
   ops[1].block.call = { id = result.id, tool = tool, args = args, output = result.output }
   if section.path ~= nil then
-    table.insert(ops[1].block.targets, { index = 0, path = section.path, lnum = section.first })
+    table.insert(ops[1].block.targets, { index = 0, path = section.path, lnum = section.lnum })
   end
   return ops
 end
@@ -290,14 +291,14 @@ end
 --- Notes how long the agent worked, like "Worked for 2m 10s · done 4:19 p.m"
 --- @param turn_end otto.Event
 --- @return otto.Op[]
-function Layout:worked(turn_end)
+function Layout:turn_end(turn_end)
   -- live and replayed times can differ by milliseconds
   local seconds = math.max(math.floor((turn_end.at - turn_end.started) / 1000), 0)
   local at = math.floor(turn_end.at / 1000)
   -- by the hour, since %p is empty or translated in some locales
   local time = os.date('%I:%M', at):gsub('^0', '') .. (os.date('*t', at).hour >= 12 and ' p.m' or ' a.m')
   local text = ('Worked for %s · %s %s'):format(
-    tools.duration(seconds),
+    util.format_duration(seconds),
     turn_end.aborted and 'aborted' or 'done',
     time
   )
@@ -315,7 +316,7 @@ function Layout:add(event)
   elseif event.type == 'error' then
     return self:block({ kind = 'error', lines = split(event.message) })
   elseif event.type == 'tool_call' then
-    local call = tools.call(event.tool, event.args)
+    local call = tools.display_call(event.tool, event.args)
     call.at = event.at
     self.calls[event.id] = call
   elseif event.type == 'tool_result' then
@@ -323,10 +324,10 @@ function Layout:add(event)
   elseif event.type == 'compaction' then
     return self:compaction(event)
   elseif event.type == 'turn_end' then
-    local ops = (event.worked or event.aborted) and self:worked(event) or {}
+    local ops = (event.worked or event.aborted) and self:turn_end(event) or {}
     self.group = nil
     self.calls = {}
-    table.insert(ops, { type = 'settle' })
+    table.insert(ops, { type = 'turn_end' })
     return ops
   end
   return {}

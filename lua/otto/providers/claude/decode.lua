@@ -30,7 +30,7 @@ tools.Task = tools.Agent
 --- Edits come with hunks
 --- @param patch { oldStart: integer, newStart: integer, lines: string[] }[]
 --- @return otto.DiffLine[]
-local function diff_lines(patch)
+local function parse_diff(patch)
   local lines = {}
   for _, hunk in ipairs(patch) do
     local old = hunk.oldStart
@@ -74,7 +74,7 @@ local tags = {
 --- @return boolean whether Claude Code added it, rather than the user, who may start a prompt with HTML
 function M.is_tagged(text) return tags[text:match('^<([%w-]+)[%s>]')] == true end
 
---- @class otto.ClaudeState What the decoder keeps between entries
+--- @class otto.ClaudeDecoder What the decoder keeps between entries
 --- @field compaction { before?: integer, after?: integer } The last one
 --- @field model? string
 --- @field titled? boolean Whether the session has a custom title, which AI titles don't replace
@@ -85,8 +85,8 @@ function M.is_tagged(text) return tags[text:match('^<([%w-]+)[%s>]')] == true en
 --- @field prompts { uuid: string, parent?: string, text: string }[] With the entry before each, which forks resume at
 --- @field last? string Uuid of the last entry, which the stream's entries don't say they follow
 
---- @return otto.ClaudeState
-function M.new_state() return { compaction = {}, calls = {}, agents = {}, handbacks = {}, notified = {}, prompts = {} } end
+--- @return otto.ClaudeDecoder
+function M.new() return { compaction = {}, calls = {}, agents = {}, handbacks = {}, notified = {}, prompts = {} } end
 
 --- @param text string
 --- @param name string Of the tag
@@ -100,7 +100,7 @@ end
 --- `task_notification`
 --- @param text string
 --- @return table
-local function notification_of(text)
+local function parse_notification(text)
   return {
     task_id = tag(text, 'task-id'),
     tool_use_id = tag(text, 'tool-use-id'),
@@ -117,19 +117,19 @@ local function notification_of(text)
 end
 
 --- Adds the end of a subagent or a command in the background, as a second result of the tool that started it
---- @param session_log otto.Log
---- @param state otto.ClaudeState
---- @param notification table See `notification_of`
+--- @param log otto.Log
+--- @param decoder otto.ClaudeDecoder
+--- @param notification table See `parse_notification`
 --- @param at? integer
-function M.notify(session_log, state, notification, at)
+function M.task_end(log, decoder, notification, at)
   -- which the agent reads like a prompt
-  session_log:prompted()
+  log:interject()
   if notification.task_id == nil or notification.skip_transcript then return end
   local usage = notification.usage or {}
   local key = table.concat({ notification.task_id, notification.status or '', usage.duration_ms or '' }, '\0')
-  if state.notified[key] then return end
-  state.notified[key] = true
-  local call = state.calls[notification.tool_use_id or state.agents[notification.task_id] or '']
+  if decoder.notified[key] then return end
+  decoder.notified[key] = true
+  local call = decoder.calls[notification.tool_use_id or decoder.agents[notification.task_id] or '']
   if call == nil or call.tool ~= 'bash' and call.tool ~= 'agent' then return end
   local ok = notification.status == 'completed'
   local output, code
@@ -143,22 +143,22 @@ function M.notify(session_log, state, notification, at)
     ok = ok and (code or 0) == 0
   else
     output = notification.handback_report
-      or state.handbacks[notification.task_id]
+      or decoder.handbacks[notification.task_id]
       or notification.result
       or notification.summary
       or ''
-    state.handbacks[notification.task_id] = nil
+    decoder.handbacks[notification.task_id] = nil
   end
   local id = notification.task_id .. ':end'
-  session_log:tool_call(id, call.tool, call.args, at)
-  session_log:tool_result({ id = id, ok = ok, output = util.trim_end(output), exit_code = code }, at)
+  log:tool_call(id, call.tool, call.args, at)
+  log:tool_result({ id = id, ok = ok, output = util.trim_end(output), exit_code = code }, at)
 end
 
---- @param session_log otto.Log
---- @param state otto.ClaudeState
+--- @param log otto.Log
+--- @param decoder otto.ClaudeDecoder
 --- @param entry table
 --- @param at? integer
-local function tool_results(session_log, state, entry, at)
+local function tool_results(log, decoder, entry, at)
   local content = entry.message.content
   for _, block in ipairs(content) do
     if block.type == 'tool_result' then
@@ -169,16 +169,16 @@ local function tool_results(session_log, state, entry, at)
       local output = file or event.text_of(block.content or '')
       local result = { id = block.tool_use_id, ok = not block.is_error, output = util.trim_end(output) }
       -- new files come with an empty patch, and show their content
-      if patch ~= nil and #patch > 0 then result.diff = diff_lines(patch) end
+      if patch ~= nil and #patch > 0 then result.diff = parse_diff(patch) end
       local code, rest = result.output:match('^Exit code (%d+)\n?(.*)$')
       if code ~= nil then
         result.exit_code = tonumber(code)
         result.output = rest
       end
-      local call = state.calls[block.tool_use_id] or {}
+      local call = decoder.calls[block.tool_use_id] or {}
       local agent = call.tool == 'agent' and result.output:match('agentId: (%w+)')
       if agent then
-        state.agents[agent] = block.tool_use_id
+        decoder.agents[agent] = block.tool_use_id
         -- which the agent may run in the background without being asked
         local async = type(details) == 'table' and details.isAsync or vim.startswith(result.output, 'Async agent')
         -- what's left is metadata, or the agent's answer when the turn waited for it
@@ -186,7 +186,7 @@ local function tool_results(session_log, state, entry, at)
       end
       -- where its output goes, which its end has
       if call.tool == 'bash' and call.args.background and result.ok then result.output = '' end
-      session_log:tool_result(result, at)
+      log:tool_result(result, at)
     end
   end
 end
@@ -199,99 +199,99 @@ local function unframe(body)
 end
 
 --- Adds an entry of Claude Code to the log, which is the same in its session files and its stream
---- @param session_log otto.Log
---- @param state otto.ClaudeState
+--- @param log otto.Log
+--- @param decoder otto.ClaudeDecoder
 --- @param entry table
-function M.add(session_log, state, entry)
-  local at = event.time(entry.timestamp)
+function M.add(log, decoder, entry)
+  local at = event.parse_iso(entry.timestamp)
   if entry.type == 'custom-title' then
-    state.titled = true
-    return session_log:state({ name = entry.customTitle })
+    decoder.titled = true
+    return log:patch_state({ name = entry.customTitle })
   end
   if entry.type == 'ai-title' then
-    if not state.titled then session_log:state({ name = entry.aiTitle }) end
+    if not decoder.titled then log:patch_state({ name = entry.aiTitle }) end
     return
   end
   if entry.subtype == 'compact_boundary' then
     local metadata = entry.compactMetadata or entry.compact_metadata or {}
     local before = metadata.preTokens or metadata.pre_tokens
     local after = metadata.postTokens or metadata.post_tokens
-    state.compaction = { before = before, after = after }
-    if after ~= nil then session_log:state({ context = after }) end
+    decoder.compaction = { before = before, after = after }
+    if after ~= nil then log:patch_state({ context_tokens = after }) end
     return
   end
   local origin = type(entry.origin) == 'table' and entry.origin or {}
   -- like a subagent's report, which its end has, or a message from another agent
   if entry.type == 'user' and origin.kind == 'peer' then
-    if origin.handback then state.handbacks[origin.from] = origin.handbackReportText or unframe(origin.body) end
-    return session_log:prompted()
+    if origin.handback then decoder.handbacks[origin.from] = origin.handbackReportText or unframe(origin.body) end
+    return log:interject()
   end
   if entry.isSidechain or entry.isMeta or entry.parent_tool_use_id ~= nil then return end
-  local parent = entry.parentUuid or state.last
-  state.last = entry.uuid or state.last
+  local parent = entry.parentUuid or decoder.last
+  decoder.last = entry.uuid or decoder.last
   -- prompts that the agent read while it worked, which the stream echoes like the others
   local attachment = entry.attachment or {}
   if attachment.type == 'queued_command' and vim.startswith(attachment.prompt or '', '<task-notification>') then
-    return M.notify(session_log, state, notification_of(attachment.prompt), at)
+    return M.task_end(log, decoder, parse_notification(attachment.prompt), at)
   end
   local prompt = type(attachment.prompt) == 'string' and attachment.prompt or nil
   if attachment.type == 'queued_command' and attachment.commandMode == 'prompt' then
     if prompt and not M.is_tagged(prompt) then
-      table.insert(state.prompts, { uuid = entry.uuid, parent = parent, text = vim.trim(prompt) })
-      return session_log:user(vim.trim(prompt), at)
+      table.insert(decoder.prompts, { uuid = entry.uuid, parent = parent, text = vim.trim(prompt) })
+      return log:user(vim.trim(prompt), at)
     end
     -- like messages from other sessions, which the agent reads like prompts
-    return session_log:prompted()
+    return log:interject()
   end
   if entry.message == nil then return end
   local content = entry.message.content
 
   if entry.type == 'assistant' then
     local model = entry.message.model
-    if model ~= nil and model ~= state.model and model ~= '<synthetic>' then
-      state.model = model
-      session_log:state({ model = model })
+    if model ~= nil and model ~= decoder.model and model ~= '<synthetic>' then
+      decoder.model = model
+      log:patch_state({ model = model })
     end
     -- like a failed request, which Claude Code adds as an answer
-    if entry.isApiErrorMessage then return session_log:error(vim.trim(event.text_of(content)), at) end
+    if entry.isApiErrorMessage then return log:error(vim.trim(event.text_of(content)), at) end
     -- like "No response requested.", which ends a turn that was killed once the session resumes, or the output of
     -- commands like /rename, which only the stream has
-    if model == '<synthetic>' then return session_log:settle(true) end
+    if model == '<synthetic>' then return log:end_turn(true) end
     for _, block in ipairs(content) do
-      if block.type == 'text' and vim.trim(block.text) ~= '' then session_log:text(vim.trim(block.text), at) end
+      if block.type == 'text' and vim.trim(block.text) ~= '' then log:text(vim.trim(block.text), at) end
       if block.type == 'tool_use' then
         local name, args = (tools[block.name] or function(input) return block.name, input end)(block.input)
-        state.calls[block.id] = { tool = name, args = args }
-        session_log:tool_call(block.id, name, args, at)
+        decoder.calls[block.id] = { tool = name, args = args }
+        log:tool_call(block.id, name, args, at)
       end
     end
     -- answers that Claude Code made itself have none, and some only have it for each of their iterations
     local tokens = entry.message.usage and context_tokens(entry.message.usage)
-    if tokens and tokens > 0 then session_log:state({ context = tokens }) end
+    if tokens and tokens > 0 then log:patch_state({ context_tokens = tokens }) end
     return
   end
   if entry.type ~= 'user' then return end
 
   local text = type(content) == 'string' and content or nil
   if entry.isCompactSummary then
-    return session_log:compaction(
-      { summary = event.text_of(content), before = state.compaction.before, after = state.compaction.after },
+    return log:compaction(
+      { summary = event.text_of(content), before = decoder.compaction.before, after = decoder.compaction.after },
       at
     )
   end
   if type(content) == 'table' then
-    tool_results(session_log, state, entry, at)
+    tool_results(log, decoder, entry, at)
     if vim.iter(content):any(function(block) return block.type == 'tool_result' end) then return end
     text = event.text_of(content)
   end
   if text == nil then return end
-  if vim.startswith(text, '[Request interrupted') then return session_log:interrupt() end
-  if vim.startswith(text, '<task-notification>') then return M.notify(session_log, state, notification_of(text), at) end
+  if vim.startswith(text, '[Request interrupted') then return log:mark_aborted() end
+  if vim.startswith(text, '<task-notification>') then return M.task_end(log, decoder, parse_notification(text), at) end
   -- like /compact from Claude Code's own UI, which renders as the compaction
   if text == '/compact' or vim.startswith(text, '/compact ') then return end
-  if M.is_tagged(text) then return session_log:prompted() end
-  table.insert(state.prompts, { uuid = entry.uuid, parent = parent, text = vim.trim(text) })
-  session_log:user(vim.trim(text), at)
+  if M.is_tagged(text) then return log:interject() end
+  table.insert(decoder.prompts, { uuid = entry.uuid, parent = parent, text = vim.trim(text) })
+  log:user(vim.trim(text), at)
 end
 
 return M

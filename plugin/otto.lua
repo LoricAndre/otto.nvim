@@ -42,7 +42,7 @@ link()
 -- since colorschemes clear the highlights first
 vim.api.nvim_create_autocmd('ColorScheme', { group = group, callback = link })
 
-require('otto.ui.keymaps').plug()
+require('otto.ui.keymaps').define_plugs()
 
 --- @return table<integer, otto.View>? by buffer, unless no session has loaded yet
 local function views()
@@ -61,7 +61,7 @@ vim.api.nvim_create_autocmd({ 'WinResized', 'WinScrolled' }, {
     local loaded = views()
     if loaded == nil then return end
     for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
-      if loaded[vim.api.nvim_win_get_buf(win)] ~= nil then require('otto.ui.prompt_area').scrolled(win) end
+      if loaded[vim.api.nvim_win_get_buf(win)] ~= nil then require('otto.ui.scroll').scrolled(win) end
     end
   end,
 })
@@ -78,7 +78,7 @@ local subcommands = {
   send = function(_, cmd) require('otto').send(cmd.line1, cmd.line2) end,
   resume = function(id)
     if id == nil then return require('otto.ui.pick').sessions(true) end
-    local saved = vim.iter(providers.list()):find(function(info) return info.id == id end)
+    local saved = vim.iter(providers.saved()):find(function(session) return session.id == id end)
     if saved == nil then return util.notify('no saved session ' .. id) end
     vim.cmd.edit(uri.format(saved.provider, saved.id))
   end,
@@ -120,7 +120,7 @@ end, {
       return vim.tbl_filter(function(name) return vim.startswith(name, lead) end, names)
     end
     if words[2] ~= 'resume' then return {} end
-    local ids = vim.tbl_map(function(info) return info.id end, providers.list())
+    local ids = vim.tbl_map(function(saved) return saved.id end, providers.saved())
     return lead == '' and ids or vim.fn.matchfuzzy(ids, lead)
   end,
 })

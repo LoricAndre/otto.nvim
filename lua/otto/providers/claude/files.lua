@@ -4,9 +4,6 @@ local decode = require('otto.providers.claude.decode')
 
 local M = {}
 
---- @type table<string, string> Session files by id, of the folder that they started in
-M.started = {}
-
 --- @param id string
 --- @return string
 function M.session_file(id)
@@ -19,10 +16,10 @@ function M.session_file(id)
 end
 --- @param file string
 --- @param modified integer
---- @return otto.SessionInfo
-local function read(file, modified)
+--- @return otto.SavedSession
+local function parse(file, modified)
   local id = vim.fs.basename(file):gsub('%.jsonl$', '')
-  local info = { provider = 'claude', id = id, messages = 0, modified = modified }
+  local saved = { provider = 'claude', id = id, message_count = 0, modified = modified }
   local custom, ai, first_prompt
   for line in io.lines(file) do
     if line:find('"type":"custom-title"', 1, true) then
@@ -30,7 +27,7 @@ local function read(file, modified)
     elseif line:find('"type":"ai-title"', 1, true) then
       ai = vim.json.decode(line).aiTitle
     elseif line:find('"type":"user"', 1, true) or line:find('"type":"assistant"', 1, true) then
-      info.messages = info.messages + 1
+      saved.message_count = saved.message_count + 1
       local content = first_prompt == nil
         and line:find('"type":"user"', 1, true)
         and vim.json.decode(line).message.content
@@ -38,15 +35,15 @@ local function read(file, modified)
       if type(content) == 'string' and not decode.is_tagged(content) then first_prompt = content end
     end
   end
-  info.name = custom or ai
-  info.title = info.name or (first_prompt and vim.trim(first_prompt):gsub('%s+', ' ')) or id
-  return info
+  saved.name = custom or ai
+  saved.title = saved.name or (first_prompt and vim.trim(first_prompt):gsub('%s+', ' ')) or id
+  return saved
 end
 
---- @return { file: string, read: fun(file: string, modified: integer): otto.SessionInfo? }[]
+--- @return otto.SessionFile[]
 function M.list()
   return vim.tbl_map(
-    function(file) return { file = file, read = read } end,
+    function(file) return { file = file, parse = parse } end,
     vim.fn.glob(vim.fs.dirname(M.session_file('')) .. '/*.jsonl', false, true)
   )
 end

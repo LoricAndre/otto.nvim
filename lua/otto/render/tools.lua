@@ -25,17 +25,17 @@ local function first_line(text) return text:match('[^\n]*') end
 --- @field filetype? string Which they highlight as
 --- @field locations? boolean Whether they start with locations, like `path:12:` from grep
 --- @field path? string Of the file that they're lines of
---- @field first? integer Line number of the first line in the file
---- @field hidden? integer Lines past `max_output_lines`, which don't show
+--- @field lnum? integer Line number of the first line in the file
+--- @field truncated? integer Lines past `max_output_lines`, which don't show
 
 --- @param lines string[]
 --- @param filetype? string
 --- @return otto.Section
-function M.output(lines, filetype)
+function M.section(lines, filetype)
   return {
     lines = vim.list_slice(lines, 1, M.max_output_lines),
     filetype = filetype,
-    hidden = #lines - M.max_output_lines,
+    truncated = #lines - M.max_output_lines,
   }
 end
 
@@ -76,7 +76,7 @@ function M.summary(tools, failed)
 end
 
 --- Args that otto's tools need, and the types of the others, see `otto.ToolArgs`
-local needs = {
+local required = {
   read = { path = 'string' },
   edit = { path = 'string' },
   write = { path = 'string', content = 'string' },
@@ -85,15 +85,15 @@ local needs = {
   fetch = { urls = 'table' },
   agent = { description = 'string' },
 }
-local types = { pattern = 'string', description = 'string', offset = 'number', limit = 'number' }
+local optional = { pattern = 'string', description = 'string', offset = 'number', limit = 'number' }
 
 --- @param tool string
 --- @param args any
 --- @return boolean whether the args are what the tool takes, which models sometimes get wrong
 function M.valid(tool, args)
   if type(args) ~= 'table' then return false end
-  for field, kind in pairs(vim.tbl_extend('force', types, needs[tool] or {})) do
-    if (args[field] ~= nil or (needs[tool] or {})[field]) and type(args[field]) ~= kind then return false end
+  for field, kind in pairs(vim.tbl_extend('force', optional, required[tool] or {})) do
+    if (args[field] ~= nil or (required[tool] or {})[field]) and type(args[field]) ~= kind then return false end
   end
   local paths = type(args.path) == 'table' and args.path or { args.path or '' }
   local urls = tool == 'fetch' and args.urls or { '' }
@@ -107,7 +107,7 @@ end
 --- @param args? table
 --- @return { tool: string, args: table } as it shows, like the agent's own tools when the args aren't what the tool
 --- takes, so that it shows what the agent sent
-function M.call(tool, args)
+function M.display_call(tool, args)
   args = args or {}
   if M.valid(tool, args) then return { tool = tool, args = args } end
   return { tool = tool .. '?', args = { description = vim.json.encode(args) } }
@@ -139,8 +139,8 @@ function M.header(tool, args)
     local more = #args.urls > 1 and (' +%d'):format(#args.urls - 1) or ''
     return { { 'fetch', 'OttoToolName' }, { ' ' .. first_line(args.urls[1]) .. more, 'OttoToolArg' } }
   end
-  local path = type(args.path) == 'table' and table.concat(vim.tbl_map(util.short, args.path), ' ')
-    or args.path and util.short(args.path)
+  local path = type(args.path) == 'table' and table.concat(vim.tbl_map(util.short_path, args.path), ' ')
+    or args.path and util.short_path(args.path)
   if args.pattern ~= nil then
     local header = { { tool, 'OttoToolName' }, { ' ' .. first_line(args.pattern), 'OttoToolArg' } }
     if path then table.insert(header, { '  in ' .. path, 'OttoToolDetail' }) end
@@ -164,17 +164,17 @@ local searchers = { rg = true, grep = true, ag = true }
 --- @param args table
 --- @param text string
 --- @return otto.Section
-function M.output_of(tool, args, text)
+function M.output_section(tool, args, text)
   local lines = text == '' and {} or vim.split(text, '\n')
   if tool == 'read' then
-    local section = M.output(lines, vim.filetype.match({ filename = args.path }))
+    local section = M.section(lines, vim.filetype.match({ filename = args.path }))
     section.path = args.path
-    section.first = args.offset or 1
+    section.lnum = args.offset or 1
     return section
   end
   -- like a subagent's report
-  if tool == 'fetch' or tool == 'agent' then return M.output(lines, 'markdown') end
-  local section = M.output(lines)
+  if tool == 'fetch' or tool == 'agent' then return M.section(lines, 'markdown') end
+  local section = M.section(lines)
   section.locations = tool == 'grep'
   if tool ~= 'bash' then return section end
 
@@ -192,9 +192,9 @@ function M.output_of(tool, args, text)
     -- the end of the file, or a range like `sed -n 10,20p`, which only says where it starts with a number
     local range = command:match('^sed %-n [\'"]?(%S+)')
     if range ~= nil then
-      section.first = tonumber(range:match('^(%d+)[,p]'))
+      section.lnum = tonumber(range:match('^(%d+)[,p]'))
     elseif program ~= 'tail' then
-      section.first = 1
+      section.lnum = 1
     end
   elseif text:match('^[%[{]') and pcall(vim.json.decode, text) then
     section.filetype = 'json'
@@ -231,7 +231,7 @@ end
 --- @param diff otto.DiffLine[]
 --- @return string[] like "+12 code", with the line numbers aligned
 --- @return integer? first line that changed
-function M.diff_lines(diff)
+function M.format_diff(diff)
   local width = 1
   for _, line in ipairs(diff) do
     if line.lnum ~= nil then width = math.max(width, #tostring(line.lnum)) end
@@ -255,14 +255,6 @@ function M.diff_counts(diff)
     if line.sign == '-' then removed = removed + 1 end
   end
   return added, removed
-end
-
---- @param seconds integer
---- @return string like "2m 10s"
-function M.duration(seconds)
-  if seconds < 60 then return seconds .. 's' end
-  if seconds < 3600 then return ('%dm %ds'):format(math.floor(seconds / 60), seconds % 60) end
-  return ('%dh %dm'):format(math.floor(seconds / 3600), math.floor(seconds % 3600 / 60))
 end
 
 return M
