@@ -1,1 +1,126 @@
-require('otto')
+-- The :Otto command, the autocmds that load sessions into their buffers and follow their windows, the highlights and
+-- the <Plug> maps. See ftplugin/otto.lua for what each session's buffer sets up
+
+if vim.g.loaded_otto then return end
+vim.g.loaded_otto = true
+
+local providers = require('otto.providers')
+local uri = require('otto.uri')
+local util = require('otto.util')
+
+vim.treesitter.language.register('markdown', 'otto')
+
+local group = vim.api.nvim_create_augroup('otto', {})
+
+-- Otto's highlight groups, linked to the groups that colorschemes already define, so that a theme only sets the ones
+-- it wants to change
+local links = {
+  OttoPrompt = 'QuickFixLine', -- background of the prompts in the transcript, and their sign column
+  OttoSeparator = 'NonText', -- the rule above the prompt
+  OttoToolName = '@markup.strong', -- like "read" or "$"
+  OttoToolArg = 'String', -- the path, command, pattern or query
+  OttoToolDetail = 'Comment', -- like "(5 lines)"
+  OttoToolFailed = 'DiagnosticError', -- also counts the failed tools in summaries
+  OttoToolSummary = 'Comment', -- like "read 2 files, ran 1 command"
+  OttoPath = 'Directory', -- of locations in tool output, like `path:12:` from grep
+  OttoLineNumber = 'LineNr', -- of those locations, and of the lines in diffs
+  OttoStatus = 'Function', -- like "Working..."
+  OttoStatusTime = 'Comment', -- how long the agent has been working
+  OttoStatusDone = 'Comment', -- like "Worked for 2m 10s · done 4:19 p.m"
+  OttoQueued = 'Comment', -- prompts that the agent hasn't read yet
+  OttoWinbarIcon = 'Function',
+  OttoWinbarLabel = 'Comment', -- like "model:"
+  OttoWinbarSeparator = 'NonText',
+}
+
+local function link()
+  for name, target in pairs(links) do
+    vim.api.nvim_set_hl(0, name, { link = target, default = true })
+  end
+end
+link()
+-- since colorschemes clear the highlights first
+vim.api.nvim_create_autocmd('ColorScheme', { group = group, callback = link })
+
+require('otto.ui.keymaps').plug()
+
+--- @return table<integer, otto.View>? by buffer, unless no session has loaded yet
+local function views()
+  local view = package.loaded['otto.view']
+  return view and view.views
+end
+
+vim.api.nvim_create_autocmd('BufReadCmd', {
+  group = group,
+  pattern = vim.tbl_map(function(name) return uri.format(name, '*') end, vim.tbl_keys(providers.providers)),
+  callback = function(ev) require('otto.view').load(ev.buf) end,
+})
+vim.api.nvim_create_autocmd({ 'WinResized', 'WinScrolled' }, {
+  group = group,
+  callback = function()
+    local loaded = views()
+    if loaded == nil then return end
+    for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+      if loaded[vim.api.nvim_win_get_buf(win)] ~= nil then require('otto.ui.prompt_area').scrolled(win) end
+    end
+  end,
+})
+vim.api.nvim_create_autocmd('VimLeavePre', {
+  group = group,
+  callback = function()
+    local loaded = views()
+    if loaded ~= nil then require('otto.ui.history').save_drafts(vim.tbl_keys(loaded)) end
+  end,
+})
+
+--- @type table<string, fun(arg?: string, cmd: vim.api.keyset.create_user_command.command_args)>
+local subcommands = {
+  send = function(_, cmd) require('otto').send(cmd.line1, cmd.line2) end,
+  resume = function(id)
+    if id == nil then return require('otto.ui.pick').sessions(true) end
+    local saved = vim.iter(providers.list()):find(function(info) return info.id == id end)
+    if saved == nil then return util.notify('no saved session ' .. id) end
+    vim.cmd.edit(uri.format(saved.provider, saved.id))
+  end,
+  pick = function() require('otto.ui.pick').sessions() end,
+}
+for name in pairs(providers.providers) do
+  subcommands[name] = function(arg) require('otto').new(arg, name) end
+end
+
+--- @return otto.View?
+local function current() return (views() or {})[vim.api.nvim_get_current_buf()] end
+
+-- :Otto pi [name], :Otto claude [name], :Otto codex [name], :Otto resume [id], :Otto pick, which :Otto defaults to, and
+-- :Otto send for the current line or a range. In a session, the commands of the palette too, like :Otto compact
+vim.api.nvim_create_user_command('Otto', function(cmd)
+  local subcommand = subcommands[cmd.fargs[1] or 'pick']
+  local commands = require('otto.ui.commands')
+  local view = current()
+  if subcommand == nil and view ~= nil and commands.get(cmd.fargs[1]) then
+    local keys = commands.run(view, cmd.fargs[1])
+    if keys then vim.api.nvim_feedkeys(vim.keycode(keys), 'n', false) end
+    return
+  end
+  if subcommand == nil then return util.notify('unknown subcommand: ' .. cmd.fargs[1]) end
+  local arg = table.concat(cmd.fargs, ' ', 2)
+  subcommand(arg ~= '' and arg or nil, cmd)
+end, {
+  nargs = '*',
+  range = true,
+  complete = function(lead, line)
+    local words = vim.split(line, '%s+')
+    if #words <= 2 then
+      local names = vim.tbl_keys(subcommands)
+      local view = current()
+      for _, command in ipairs(view and require('otto.ui.commands').available(view) or {}) do
+        if subcommands[command.name] == nil then table.insert(names, command.name) end
+      end
+      table.sort(names)
+      return vim.tbl_filter(function(name) return vim.startswith(name, lead) end, names)
+    end
+    if words[2] ~= 'resume' then return {} end
+    local ids = vim.tbl_map(function(info) return info.id end, providers.list())
+    return lead == '' and ids or vim.fn.matchfuzzy(ids, lead)
+  end,
+})

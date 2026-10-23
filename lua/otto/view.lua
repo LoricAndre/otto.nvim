@@ -30,6 +30,9 @@ local M = {}
 --- @type table<integer, otto.View> by buffer
 M.views = {}
 
+--- @type table<string, string> Display names of new sessions by buffer name, until their buffers load
+M.names = {}
+
 --- @param event otto.Event
 function View:on_log(event)
   for _, op in ipairs(self.layout:add(event)) do
@@ -77,9 +80,10 @@ end
 
 --- Shows the session that names the buffer, starting its agent unless it runs already
 --- @param bufnr integer
---- @param name? string Display name of a new session
-function M.load(bufnr, name)
+function M.load(bufnr)
   local session_uri = vim.api.nvim_buf_get_name(bufnr)
+  local name = M.names[session_uri]
+  M.names[session_uri] = nil
   local provider = providers.get(uri.parse(session_uri) or '')
   if provider == nil then return util.notify('unknown agent: ' .. session_uri) end
 
