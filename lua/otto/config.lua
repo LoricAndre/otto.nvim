@@ -5,6 +5,7 @@
 --- @field default_provider 'pi' | 'claude' | 'codex' Of `:Otto` and new sessions
 --- @field ask { provider: 'pi' } Answers one-shot prompts, like naming sessions
 --- @field cleanup_delay integer Milliseconds before an empty, hidden session's buffer is deleted
+--- @field tool_header otto.ToolHeader | false Custom tool headers, false for the defaults
 --- @field keymaps table<string, otto.Keymap> | false Of the session's buffer, false for none
 --- @field providers { pi: otto.ProviderConfig, claude: otto.ClaudeConfig, codex: otto.ProviderConfig }
 
@@ -24,6 +25,7 @@
 --- @field default_provider? 'pi' | 'claude' | 'codex'
 --- @field ask? { provider?: 'pi' }
 --- @field cleanup_delay? integer
+--- @field tool_header? otto.ToolHeader | false
 --- @field keymaps? table<string, otto.Keymap> | false
 --- @field providers? { pi?: otto.ProviderConfigPartial, claude?: otto.ClaudeConfigPartial, codex?: otto.ProviderConfigPartial }
 
@@ -131,6 +133,7 @@ local function schema()
     default_provider = { 'pi', types.enum({ 'pi', 'claude', 'codex' }) },
     ask = { provider = { 'pi', types.enum({ 'pi' }) } },
     cleanup_delay = { 10000, 'number' },
+    tool_header = { false, { types.enum({ false }), 'function' } },
     keymaps = { normalize(keymaps), { types.enum({ false }), keymaps_type } },
     providers = {
       pi = provider('pi'),

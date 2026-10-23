@@ -273,7 +273,7 @@ function M.load(bufnr, name)
     Session
   )
   session.state = { id = id, queue = {}, commands = {}, background = {} }
-  session.layout = layout.new()
+  session.layout = layout.new(bufnr)
   session.area = prompt_area.new(bufnr, session.state, session.layout)
   session.buffer = buffer.new(bufnr, function() session.area:draw() end)
   -- over the area of the session before a restart

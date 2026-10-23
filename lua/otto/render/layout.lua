@@ -52,6 +52,7 @@ M.body_indent = body_indent
 --- @field block? otto.Block
 
 --- @class otto.Layout
+--- @field bufnr integer Session buffer
 --- @field tail? 'user' | 'text' | 'tool' | 'error' | 'note' Kind of the last block, which spaces the next one
 --- @field group? { tools: string[], failed: integer } Tools since the last block of another kind
 --- @field calls table<string, { tool: string, args: table, at?: integer }> Tool calls by id, until their result arrives
@@ -60,8 +61,9 @@ M.body_indent = body_indent
 local Layout = {}
 Layout.__index = Layout
 
+--- @param bufnr integer
 --- @return otto.Layout
-function M.new() return setmetatable({ calls = {}, running = {}, edits = {} }, Layout) end
+function M.new(bufnr) return setmetatable({ bufnr = bufnr, calls = {}, running = {}, edits = {} }, Layout) end
 
 --- @param block otto.Block
 --- @return otto.Op[]
@@ -147,7 +149,7 @@ local function split(text) return vim.split(text, '\n') end
 --- @param diff otto.DiffLine[]
 --- @return otto.Op[]
 function Layout:diff(call, diff)
-  local header = tools.header(call.tool, call.args)
+  local header = tools.header(call.tool, call.args, self.bufnr)
   local added, removed = tools.diff_counts(diff)
   vim.list_extend(header, { { ('  +%d'):format(added), 'Added' }, { (' -%d'):format(removed), 'Removed' } })
   local lines, first_changed = tools.diff_lines(diff)
@@ -211,7 +213,7 @@ function Layout:tool_result(result)
   local args = call.args
   if result.diff ~= nil then return self:diff(call, result.diff) end
 
-  local header = tools.header(tool, args)
+  local header = tools.header(tool, args, self.bufnr)
   if tool == 'write' and result.ok then
     -- without the line that the last newline would start
     local lines = split((args.content:gsub('\n$', '')))

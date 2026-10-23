@@ -114,7 +114,7 @@ function Area:draw()
     started[running.id] = self.started[running.id] or vim.uv.now()
     shown[running.id] = true
     local line = { { '  ' } } -- nested in a group
-    for _, chunk in ipairs(tools.header(running.tool, running.args)) do
+    for _, chunk in ipairs(tools.header(running.tool, running.args, bufnr)) do
       -- without their filetype, which virtual text doesn't take
       table.insert(line, { chunk[1], chunk[2] })
     end

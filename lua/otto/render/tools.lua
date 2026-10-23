@@ -1,6 +1,7 @@
 -- How tools look: their headers, the lines below them, and how groups of them summarize. Only the tools in the log,
 -- see `otto.ToolArgs`
 
+local config = require('otto.config')
 local util = require('otto.util')
 
 local M = {}
@@ -108,7 +109,7 @@ end
 --- @param tool string
 --- @param args table
 --- @return otto.Chunks like "read lua/otto/init.lua:10-20"
-function M.header(tool, args)
+local function default_header(tool, args)
   if tool == 'bash' then
     -- when the agent describes its commands, which reads better than them, while they show unfolded
     if args.description ~= nil then
@@ -150,6 +151,43 @@ function M.header(tool, args)
   end
   local arg = path or args.description or vim.json.encode(args)
   return { { tool, 'OttoToolName' }, { ' ' .. first_line(arg), 'OttoToolArg' } }
+end
+
+--- @class otto.ToolHeaderCall
+--- @field tool string Normalized tool name
+--- @field args table Normalized arguments
+
+--- @alias otto.ToolHeader fun(call: otto.ToolHeaderCall): (string | { [1]: string, [2]: string? })[]?
+
+--- @param tool string
+--- @param args table
+--- @param bufnr integer Session buffer, which need not be current
+--- @return otto.Chunks
+function M.header(tool, args, bufnr)
+  local callback = config.get({ bufnr = bufnr }).tool_header
+  if callback then
+    local ok, header = pcall(function()
+      local items = callback({ tool = tool, args = vim.deepcopy(args) })
+      if items == nil then return end
+      assert(type(items) == 'table' and vim.islist(items), 'expected a list of header items or nil')
+      local chunks = {}
+      for _, item in ipairs(items) do
+        local text = type(item) == 'table' and item[1] or item
+        local group
+        if type(item) == 'table' then group = item[2] end
+        assert(type(text) == 'string' and not text:find('[\r\n%z]'), 'expected single-line header text')
+        assert(group == nil or type(group) == 'string', 'expected a highlight group name or nil')
+        table.insert(chunks, { text, group or 'Normal' })
+      end
+      return chunks
+    end)
+    if ok then
+      if header ~= nil then return header end
+    else
+      vim.notify_once('otto: tool_header: ' .. tostring(header), vim.log.levels.ERROR)
+    end
+  end
+  return default_header(tool, args)
 end
 
 --- Commands whose output is the content of the file that they end with, like `cat foo.lua` or `sed -n 1,20p foo.lua`
