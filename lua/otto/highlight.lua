@@ -91,11 +91,15 @@ vim.api.nvim_set_decoration_provider(pending_ns, {
   end,
   -- closed folds only draw their first line, and the extmarks set here draw with the line
   on_line = function(_, _, bufnr, row)
-    for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(bufnr, pending_ns, { row, 0 }, { row, -1 }, { overlap = true })) do
-      local fn = pending[bufnr][mark[1]]
-      pending[bufnr][mark[1]] = nil
-      vim.api.nvim_buf_del_extmark(bufnr, pending_ns, mark[1])
-      fn(mark[2])
+    local opts = { overlap = true, details = true }
+    for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(bufnr, pending_ns, { row, 0 }, { row, -1 }, opts)) do
+      -- not of the block above, which ends where the row starts, like inside the closed fold above it
+      if mark[2] == row or mark[4].end_row > row then
+        local fn = pending[bufnr][mark[1]]
+        pending[bufnr][mark[1]] = nil
+        vim.api.nvim_buf_del_extmark(bufnr, pending_ns, mark[1])
+        fn(mark[2])
+      end
     end
   end,
 })
@@ -124,7 +128,7 @@ end
 --- @param row integer
 --- @param indent integer
 --- @param lines string[]
---- @param lang string
+--- @param lang? string
 local function diff(bufnr, row, indent, lines, lang)
   local before, after
   -- hunks parse apart, since a string that one leaves open would continue into the next
@@ -168,10 +172,10 @@ end
 --- @param row integer 0-indexed, of the first line
 --- @param indent integer Columns before the lines in the buffer
 --- @param lines string[]
---- @param filetype string
+--- @param filetype? string
 function M.diff(bufnr, row, indent, lines, filetype)
-  local lang = vim.treesitter.language.get_lang(filetype)
-  if lang == nil then return end
+  -- whose line numbers highlight without a parser too
+  local lang = filetype and vim.treesitter.language.get_lang(filetype)
   lazily(bufnr, row, #lines, function(first) diff(bufnr, first, indent, lines, lang) end)
 end
 

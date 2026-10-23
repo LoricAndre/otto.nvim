@@ -158,9 +158,7 @@ function Buffer:block(block)
     if section.filetype ~= nil then highlight.lines(bufnr, first, col, section.lines, section.filetype) end
     first = first + #section.lines + ((section.hidden or 0) > 0 and 1 or 0)
   end
-  if block.diff ~= nil and block.diff.filetype ~= nil then
-    highlight.diff(bufnr, row + 1, col, block.sections[1].lines, block.diff.filetype)
-  end
+  if block.diff ~= nil then highlight.diff(bufnr, row + 1, col, block.sections[1].lines, block.diff.filetype) end
   for _, hl in ipairs(block.highlights) do
     local opts = hl.col == nil and { line_hl_group = hl.group }
       or hl.end_col and { hl_group = hl.group, end_col = hl.end_col }

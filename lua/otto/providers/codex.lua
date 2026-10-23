@@ -36,7 +36,10 @@ local function shell_tool(item)
   local action = #actions == 1 and actions[1] or {}
   -- like `sed -n '10,20p' file`
   local offset = tonumber(action.command and action.command:match('^sed %-n [\'"]?(%d+)[,p]') or nil)
-  if action.type == 'read' then return 'read', { path = action.path, offset = offset } end
+  -- unlike reads of the end of the file, which don't say where they start
+  if action.type == 'read' and not (action.command or ''):match('^tail') then
+    return 'read', { path = action.path, offset = offset }
+  end
   if action.type == 'listFiles' then return 'ls', { path = action.path or '.' } end
   if action.type == 'search' then return 'grep', { pattern = action.query or action.command, path = action.path } end
   return 'bash', { command = command(item) }
@@ -241,6 +244,8 @@ local function input(text) return { { type = 'text', text = text, text_elements 
 
 --- @param text string
 function Handle:start_turn(text)
+  -- of a thread that failed to start, which nothing would read
+  if self.error ~= nil then return util.notify(self.error) end
   local id = util.uuid()
   table.insert(self.unread, { text = text, id = id })
   self:queue_update()
@@ -259,7 +264,11 @@ function Handle:start_turn(text)
       if err == nil then return end
       util.notify(err)
       self:read({ clientId = id })
-      if self.turn == nil then self:set_working(false) end
+      if self.turn ~= nil then return end
+      -- like the follow-ups that waited for it
+      if #self.follow_ups > 0 then return self:start_turn(table.remove(self.follow_ups, 1)) end
+      self:queue_update()
+      self:set_working(false)
     end)
   end)
 end
@@ -416,26 +425,42 @@ function Handle:prompt(text, mode)
   self:invoke('turn/steer', params, function(err)
     if err == nil then return end
     self:read({ clientId = id })
-    -- the turn completed before Codex got the prompt, which starts the next one instead
-    if turn ~= nil and self.turn ~= turn then return self:start_turn(text) end
-    util.notify(err)
+    -- like a turn that can't be steered, such as a compaction, or one that completed before Codex got the prompt, which
+    -- then goes after it
+    if self.turn ~= nil then
+      table.insert(self.follow_ups, text)
+      return self:queue_update()
+    end
+    self:start_turn(text)
   end)
 end
 
 function Handle:abort()
   if self.turn == nil then return end
+  -- prompts that Codex hasn't read, which it drops with the turn, go on after it
+  for i = #self.unread, 1, -1 do
+    table.insert(self.follow_ups, 1, self.unread[i].text)
+  end
+  self.unread = {}
+  self:queue_update()
   self:invoke('turn/interrupt', { threadId = self.thread, turnId = self.turn })
 end
 
---- Prompts that steer are with Codex already
+--- Prompts that steer are with Codex already, and only come back all at once, like before an abort, which drops them
 --- @async
 --- @return string[]
 --- @param last? boolean Only the newest
 function Handle:take_queue(last)
-  local follow_ups = last and { table.remove(self.follow_ups) } or self.follow_ups
-  if not last then self.follow_ups = {} end
+  if last then
+    local texts = { table.remove(self.follow_ups) }
+    self:queue_update()
+    return texts
+  end
+  local texts = vim.tbl_map(function(unread) return unread.text end, self.unread)
+  vim.list_extend(texts, self.follow_ups)
+  self.unread, self.follow_ups = {}, {}
   self:queue_update()
-  return follow_ups
+  return texts
 end
 
 --- @async
@@ -485,7 +510,7 @@ function Handle:started(err, result)
   if err ~= nil then
     -- which raises in what waits for the thread, like the replay that every session starts with
     self.error = err
-    self.unread = {}
+    self.unread, self.follow_ups = {}, {}
     self:queue_update()
     self:set_working(false)
   elseif result ~= nil then

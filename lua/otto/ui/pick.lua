@@ -7,6 +7,7 @@ local util = require('otto.util')
 --- @field prompt string
 --- @field items fun(): any[] Called again when an action refreshes the picker
 --- @field format fun(item: any): otto.Chunks, otto.Chunks? The item, and its notes on the right
+--- @field text? fun(item: any): string What the query matches, the item as it's formatted by default
 --- @field preview? fun(item: any?) Of the item under the cursor, nil when there's none or the picker is cancelled
 --- @field actions? otto.PickerAction[]
 --- @field on_accept fun(item: any)
@@ -51,7 +52,13 @@ local function fit(chunks, width)
     local line = chunk[1]:gsub('\n.*', '')
     local chunk_width = vim.api.nvim_strwidth(line)
     if used + chunk_width > width then
-      local part = vim.fn.strcharpart(line, 0, math.max(width - used - 1, 0))
+      -- by the cells of each character, which wide ones take two of
+      local part = ''
+      for _, char in ipairs(vim.fn.split(line, '\\zs')) do
+        used = used + vim.api.nvim_strwidth(char)
+        if used > width - 1 then break end
+        part = part .. char
+      end
       table.insert(fitted, { part .. '…', chunk[2] })
       return fitted
     end
@@ -120,7 +127,7 @@ function M.select(picker)
       if items == nil then
         items, texts = picker.items(), {}
         for _, item in ipairs(items) do
-          texts[item] = text((picker.format(item)))
+          texts[item] = picker.text and picker.text(item) or text((picker.format(item)))
         end
       end
       callback(items)
@@ -148,6 +155,8 @@ function M.select(picker)
       preview(nil)
       if picker.on_cancel then safely(picker.on_cancel) end
     end,
+    -- like when it's closed for another picker, without cancelling
+    on_close = function() preview(nil) end,
     on_start = function(session, keyset)
       --- @type otto.PickerControl
       local control = {

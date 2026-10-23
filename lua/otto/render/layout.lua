@@ -157,8 +157,12 @@ function Layout:diff(call, diff)
     table.insert(self.edits, { filename = path, lnum = first_changed or 1, text = tools.join(header) })
   end
 
-  local targets =
-    { { index = 0, path = path, lnum = first_changed }, { index = 1, count = #lines, path = path, parse = 'diff' } }
+  local targets = path
+      and {
+        { index = 0, path = path, lnum = first_changed },
+        { index = 1, count = #lines, path = path, parse = 'diff' },
+      }
+    or {}
   local ops = self:tool_block('tool', header, { { lines = lines } }, targets)
   local block = ops[1].block --[[@as otto.Block]]
   block.diff = { filetype = path and vim.filetype.match({ filename = path }) }
@@ -214,7 +218,7 @@ function Layout:tool_result(result)
   local header = tools.header(tool, args)
   if tool == 'write' and result.ok then
     -- without the line that the last newline would start
-    local lines = split((args.content:gsub('\n$', '')))
+    local lines = args.content == '' and {} or split((args.content:gsub('\n$', '')))
     table.insert(header, { ('  +%d'):format(#lines), 'Added' })
     local section = tools.output(lines, vim.filetype.match({ filename = args.path }))
     section.path = args.path

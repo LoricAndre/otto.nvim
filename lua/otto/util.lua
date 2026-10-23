@@ -40,6 +40,19 @@ end
 --- @return string without the whitespace at its end, unlike `vim.trim`, which would shift the lines of file contents
 function M.trim_end(text) return text:match('^(.*%S)') or '' end
 
+--- Renames the buffer, without the unlisted buffer of its old name that renaming leaves, which <C-^> would open
+--- @param bufnr integer
+--- @param name string
+function M.rename_buffer(bufnr, name)
+  local old = vim.api.nvim_buf_get_name(bufnr)
+  vim.api.nvim_buf_set_name(bufnr, name)
+  for _, other in ipairs(vim.api.nvim_list_bufs()) do
+    if other ~= bufnr and not vim.api.nvim_buf_is_loaded(other) and vim.api.nvim_buf_get_name(other) == old then
+      vim.api.nvim_buf_delete(other, { force = true })
+    end
+  end
+end
+
 --- @param path string
 --- @return string relative to the current folder, or the home folder
 function M.short(path) return vim.fn.fnamemodify(path, ':~:.') end

@@ -125,7 +125,7 @@ function Session:on_status(status)
     if status.parent ~= nil then vim.bo[self.bufnr].buflisted = false end
     -- like Codex, which creates the ids of its sessions
     if status.id ~= nil and vim.api.nvim_buf_get_name(self.bufnr) ~= self.provider.name .. '://' .. status.id then
-      vim.api.nvim_buf_set_name(self.bufnr, self.provider.name .. '://' .. status.id)
+      util.rename_buffer(self.bufnr, self.provider.name .. '://' .. status.id)
     end
     vim.cmd.redrawstatus({ bang = true })
   elseif status.type == 'request' then
@@ -250,7 +250,7 @@ function M.restart(bufnr, id)
   if id ~= nil then M.close_children(vim.api.nvim_buf_get_name(bufnr)) end
   -- which is closed, even if the agent fails to start again
   M.sessions[bufnr] = nil
-  if id ~= nil then vim.api.nvim_buf_set_name(bufnr, session.provider.name .. '://' .. id) end
+  if id ~= nil then util.rename_buffer(bufnr, session.provider.name .. '://' .. id) end
   M.load(bufnr)
 end
 

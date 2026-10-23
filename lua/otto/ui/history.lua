@@ -26,13 +26,14 @@ local M = {}
 --- @type otto.HistoryEntry[] Oldest first, which stay the same tables, since edits are keyed by them
 local entries = {}
 local offset = 0 -- bytes of the file read so far
+local inode --- @type integer? Of the file read, which `forget` replaces
 
 --- Reads what other instances and sessions added since the last read
 local function load()
   local stat = vim.uv.fs_stat(path)
-  if stat == nil or stat.size == offset then return end
-  if stat.size < offset then
-    entries, offset = {}, 0
+  if stat == nil or stat.size == offset and stat.ino == inode then return end
+  if stat.size < offset or stat.ino ~= inode then
+    entries, offset, inode = {}, 0, stat.ino
   end
   local file = io.open(path, 'r')
   if file == nil then return end
@@ -205,6 +206,7 @@ function M.pick(session, all)
     prompt = 'History: ',
     items = function() return M.list(not all and vim.fn.getcwd() or nil) end,
     format = format,
+    text = function(entry) return entry.text end,
     preview = function(entry) show(entry and entry.text or original) end,
     on_accept = function(entry)
       if not vim.api.nvim_buf_is_valid(bufnr) then return end
@@ -268,8 +270,13 @@ end
 --- Puts back the unsent prompt of the session's buffer, unless the prompt has text already, like after a restart
 --- @param bufnr integer
 function M.restore_draft(bufnr)
-  local draft = read_drafts()[vim.api.nvim_buf_get_name(bufnr)]
-  if draft ~= nil and vim.fn.prompt_getinput(bufnr) == '' then set_prompt(bufnr, draft.text) end
+  local drafts = read_drafts()
+  local name = vim.api.nvim_buf_get_name(bufnr)
+  if drafts[name] == nil then return end
+  if vim.fn.prompt_getinput(bufnr) == '' then set_prompt(bufnr, drafts[name].text) end
+  -- back in the prompt, which saves it again when its buffer unloads, unless it's sent
+  drafts[name] = nil
+  write(drafts_path, vim.json.encode(drafts))
 end
 
 --- Forgets where the session was in the history, and what the prompt held, once it submits

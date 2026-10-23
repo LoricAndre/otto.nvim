@@ -87,7 +87,9 @@ function M.pick(session, mode)
   util.run(function()
     local prompts = M.list(session)
     if #prompts == 0 then return util.notify('no prompts yet', vim.log.levels.WARN) end
-    local win = vim.fn.bufwinid(session.bufnr)
+    -- the current one, of the windows that show the session
+    local win = vim.api.nvim_get_current_buf() == session.bufnr and vim.api.nvim_get_current_win()
+      or vim.fn.bufwinid(session.bufnr)
     local view = win ~= -1 and vim.api.nvim_win_call(win, vim.fn.winsaveview)
 
     --- @param prompt otto.Prompt?
@@ -134,6 +136,7 @@ function M.pick(session, mode)
       prompt = prompt[mode],
       items = function() return prompts end,
       format = format,
+      text = function(item) return item.text end,
       preview = preview,
       on_accept = accept[mode],
       actions = {

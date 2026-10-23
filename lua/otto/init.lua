@@ -53,7 +53,7 @@ end
 --- @return otto.Session[] The open sessions, most recently used first
 local function open_sessions()
   local infos = vim.tbl_filter(
-    function(info) return sessions[info.bufnr] ~= nil end,
+    function(info) return sessions[info.bufnr] ~= nil and not sessions[info.bufnr].handle.read_only end,
     vim.fn.getbufinfo({ bufloaded = 1 })
   )
   table.sort(infos, function(a, b) return a.lastused > b.lastused end)
@@ -75,6 +75,8 @@ function M.append(text, bufnr)
   local line = vim.api.nvim_buf_get_lines(0, -2, -1, false)[1]
   local space = (line == '' or line:match('%s$')) and '' or ' '
   vim.api.nvim_buf_set_text(0, -1, #line, -1, #line, { space .. text .. ' ' })
+  -- in the prompt, which entering insert mode from the transcript would move the cursor to the start of
+  vim.api.nvim_win_set_cursor(0, { vim.api.nvim_buf_line_count(0), 0 })
   vim.cmd.startinsert({ bang = true })
 end
 

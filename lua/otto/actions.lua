@@ -31,6 +31,7 @@ end
 local function system(cmd)
   local opts = { text = true }
   local out = vim.async.await(1, function(callback) vim.system(cmd, opts, vim.schedule_wrap(callback)) end)
+  if out.code ~= 0 then error(cmd[1] .. ': ' .. vim.trim(out.stderr or ''), 0) end
   return out.stdout
 end
 
@@ -45,7 +46,8 @@ local function prompt(doing, target, message, opts)
   local virt_text = { { doing .. '...', 'Comment' } }
   local mark = vim.api.nvim_buf_set_extmark(target.bufnr, ns, target.start_row - 1, 0, { virt_text = virt_text })
   local ok, answer = pcall(providers.ask, message, vim.tbl_extend('force', opts or {}, { bufnr = target.bufnr }))
-  vim.api.nvim_buf_del_extmark(target.bufnr, ns, mark)
+  -- unless the buffer closed meanwhile
+  if vim.api.nvim_buf_is_valid(target.bufnr) then vim.api.nvim_buf_del_extmark(target.bufnr, ns, mark) end
   if not ok then error(answer, 0) end
   return answer
 end
@@ -105,6 +107,7 @@ M.actions = {
       )
       message = message .. '\n\nReply with only the commit message'
       local commit = prompt('writing', target, message, { tools = { 'read', 'grep' }, thinking = quick.thinking })
+      if not vim.api.nvim_buf_is_valid(target.bufnr) then return end
       vim.api.nvim_buf_set_lines(target.bufnr, 0, 0, false, vim.split(vim.trim(commit), '\n'))
     end,
   },

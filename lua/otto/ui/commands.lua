@@ -19,6 +19,7 @@ local M = {}
 --- @field palette? false Whether the palette skips it, like for moving around
 --- @field available? fun(session: otto.Session): boolean Commands that only some agents support
 --- @field replaces? string[] The agents' commands that it does instead, besides the one of its name
+--- @field prompts? boolean Whether it changes the prompt, which subagents' sessions can't take
 
 --- Opens the location in the previous window, or this one when there's no other
 --- @param target otto.Target
@@ -109,6 +110,7 @@ M.builtin = {
   {
     name = 'clear',
     description = 'Start a new session in this buffer, keeping this one saved',
+    prompts = true,
     run = function(session)
       local base = session.provider.new_id()
       -- like a new session of the same second
@@ -239,7 +241,7 @@ M.builtin = {
     expr = true,
     run = function(session)
       local target = session.buffer:target_at(vim.fn.line('.') - 1)
-      if target == nil then return 'A<CR><Esc>' end
+      if target == nil then return not session.handle.read_only and 'A<CR><Esc>' or '' end
       vim.schedule(function() M.open_target(target) end) -- windows can't change while the mapping evaluates
       return ''
     end,
@@ -247,6 +249,7 @@ M.builtin = {
   {
     name = 'submit',
     description = 'Submit, which steers while the agent is working',
+    prompts = true,
     modes = { 'n', 'i' },
     expr = true,
     run = function() return vim.fn.mode() == 'i' and '<CR>' or 'A<CR><Esc>' end,
@@ -254,6 +257,7 @@ M.builtin = {
   {
     name = 'follow_up',
     description = 'Submit as a follow-up, which waits for the agent to finish',
+    prompts = true,
     modes = { 'i' },
     expr = true,
     run = function(session)
@@ -292,6 +296,7 @@ M.builtin = {
   {
     name = 'history_older',
     description = 'Take back the newest queued prompt, or the older prompt in history',
+    prompts = true,
     modes = { 'n', 'i' },
     palette = false,
     run = function(session)
@@ -305,6 +310,7 @@ M.builtin = {
   {
     name = 'history_newer',
     description = 'Newer prompt in history',
+    prompts = true,
     modes = { 'n', 'i' },
     palette = false,
     run = function(session) history.step(session, -vim.v.count1) end,
@@ -321,7 +327,10 @@ M.builtin = {
 --- @param session otto.Session
 --- @return otto.Command[] that the session's agent supports
 function M.available(session)
-  return vim.tbl_filter(function(command) return command.available == nil or command.available(session) end, M.builtin)
+  return vim.tbl_filter(function(command)
+    if command.prompts and session.handle.read_only then return false end
+    return command.available == nil or command.available(session)
+  end, M.builtin)
 end
 
 --- @param name string
@@ -337,6 +346,9 @@ end
 function M.run(session, name)
   local command = M.get(name)
   if command == nil then return util.notify('unknown command: ' .. name) end
+  if command.prompts and session.handle.read_only then
+    return util.notify("subagents can't be prompted yet", vim.log.levels.WARN)
+  end
   if command.available and not command.available(session) then
     return util.notify(name .. " isn't supported by " .. session.provider.name)
   end

@@ -10,6 +10,10 @@ local M = { name = 'claude', icon = '󰛄  ' }
 
 --- @type table<string, { session: string, at?: string }> Forks by id, until they're prompted, which saves them
 local forks = {}
+--- @type table<string, true> Subagents that ended, by uri, which Claude Code before 2.1.304 only says in their parent's
+local ended = {}
+--- @type table<string, string> Session files by id, of the folder that they started in
+local files = {}
 
 -- of the default model, until Claude Code reports the window of the one that answers
 local default_window = 1000000
@@ -162,6 +166,8 @@ end
 --- @param notification table See `notification_of`
 --- @param at? integer
 local function notify(session_log, state, notification, at)
+  -- which the agent reads like a prompt
+  session_log:prompted()
   if notification.task_id == nil or notification.skip_transcript then return end
   local usage = notification.usage or {}
   local key = table.concat({ notification.task_id, notification.status or '', usage.duration_ms or '' }, '\0')
@@ -170,14 +176,13 @@ local function notify(session_log, state, notification, at)
   local call = state.calls[notification.tool_use_id or '']
   if call ~= nil and call.tool == 'bash' then
     local id = notification.task_id .. ':end'
-    local code = tonumber((notification.summary or ''):match('exit code (%d+)'))
+    local code = tonumber((notification.summary or ''):match('.*exit code (%d+)'))
     local file = notification.output_file and io.open(notification.output_file, 'r')
     local output = file and file:read('*a') or ''
     if file then file:close() end
     local trailer = output:match('%[exited with code (%d+)%]%s*$')
     code = code or tonumber(trailer)
     output = output:gsub('%s*%[exited with code %d+%]%s*$', '')
-    session_log:prompted()
     session_log:tool_call(id, 'bash', call.args, at)
     local ok = notification.status == 'completed' and (code or 0) == 0
     return session_log:tool_result({ id = id, ok = ok, output = util.trim_end(output), exit_code = code }, at)
@@ -187,9 +192,11 @@ local function notify(session_log, state, notification, at)
   local report = notification.handback_report or state.handbacks[notification.task_id]
   state.handbacks[notification.task_id] = nil
   local status = notification.status
+  local uri = agent and agent.uri or ('claude://%s/%s'):format(state.session, notification.task_id)
+  ended[uri] = true
   session_log:message({
     from = agent and agent.name or call.args.description,
-    uri = agent and agent.uri or ('claude://%s/%s'):format(state.session, notification.task_id),
+    uri = uri,
     kind = status == 'completed' and (report and 'handback' or 'done') or status == 'killed' and 'stopped' or 'failed',
     text = report or notification.result or notification.summary,
     tokens = usage.total_tokens,
@@ -207,7 +214,7 @@ local function peer(session_log, state, origin, at)
   local agent = state.agents[origin.from or '']
   if origin.handback then
     state.handbacks[origin.from] = origin.handbackReportText or origin.body
-    return
+    return session_log:prompted()
   end
   session_log:message(
     { from = agent and agent.name or origin.from or 'agent', uri = agent and agent.uri, text = origin.body },
@@ -246,6 +253,7 @@ local function tool_results(session_log, state, entry, at)
         call.args.background = call.args.background or async or nil
         -- what's left is metadata, or the agent's answer when the turn waited for it
         result.output = async and '' or vim.trim((result.output:gsub('\n*agentId: .*$', '')))
+        if not async then ended[result.child] = true end
       end
       -- where its output goes, which its end has
       if call.tool == 'bash' and call.args.background and result.ok then result.output = '' end
@@ -289,12 +297,18 @@ local function add(session_log, state, entry)
   if attachment.type == 'queued_command' and vim.startswith(attachment.prompt or '', '<task-notification>') then
     return notify(session_log, state, notification_of(attachment.prompt), at)
   end
+  -- a subagent's are from the session that started it, like its updates while the subagent runs
+  local prompt = type(attachment.prompt) == 'string' and attachment.prompt or nil
+  if attachment.type == 'queued_command' and state.child and prompt and not is_tagged(prompt) then
+    return session_log:message({ from = state.child.parent.name, uri = state.child.parent.uri, text = prompt }, at)
+  end
   if attachment.type == 'queued_command' and attachment.commandMode == 'prompt' then
-    if type(attachment.prompt) == 'string' and not is_tagged(attachment.prompt) then
-      table.insert(state.prompts, { uuid = entry.uuid, parent = parent, text = vim.trim(attachment.prompt) })
-      session_log:user(vim.trim(attachment.prompt), at)
+    if prompt and not is_tagged(prompt) then
+      table.insert(state.prompts, { uuid = entry.uuid, parent = parent, text = vim.trim(prompt) })
+      return session_log:user(vim.trim(prompt), at)
     end
-    return
+    -- like messages from other sessions, which the agent reads like prompts
+    return session_log:prompted()
   end
   if entry.message == nil then return end
   local content = entry.message.content
@@ -345,7 +359,8 @@ local function add(session_log, state, entry)
   if vim.startswith(text, '[Request interrupted') then return session_log:interrupt() end
   if vim.startswith(text, '<task-notification>') then return notify(session_log, state, notification_of(text), at) end
   -- like /compact from Claude Code's own UI, which renders as the compaction
-  if is_tagged(text) or text == '/compact' or vim.startswith(text, '/compact ') then return end
+  if text == '/compact' or vim.startswith(text, '/compact ') then return end
+  if is_tagged(text) then return session_log:prompted() end
   local child = state.child
   if child == nil then
     table.insert(state.prompts, { uuid = entry.uuid, parent = parent, text = vim.trim(text) })
@@ -441,7 +456,10 @@ function Handle:task(msg)
     local status = (msg.patch or {}).status
     if status ~= nil and status ~= 'running' and status ~= 'pending' then tasks[msg.task_id] = nil end
   elseif msg.subtype == 'task_notification' then
+    local task = tasks[msg.task_id]
     tasks[msg.task_id] = nil
+    -- which end with their tool's result instead, unlike those in the background
+    if msg.is_backgrounded == false or task and not task.background then return self:background_update() end
     -- until Claude Code reads it, which starts a turn, where its file has it
     msg.at = event.now()
     table.insert(self.notifications, msg)
@@ -507,6 +525,8 @@ function Handle:take(uuid)
   self.taken[uuid] = true
   table.insert(self.state.prompts, { uuid = uuid, parent = self.state.last, text = vim.trim(text) })
   self.log:user(vim.trim(text))
+  -- like a follow-up, which starts after the turn that it waited for
+  if not self.working then self:set_working(true) end
 end
 
 --- Claude Code asks before using tools, unless it's been allowed to
@@ -728,6 +748,7 @@ function Handle:close() self.proc:close() end
 
 --- A subagent's session, read from its file and followed while Claude Code writes it, without a process of its own
 --- @class otto.ClaudeChild : otto.Handle
+--- @field uri string
 --- @field file string
 --- @field meta string Of the subagent, which says when it finished
 --- @field offset integer Bytes of the file read so far
@@ -766,10 +787,15 @@ function Child:read()
   end
 end
 
+--- @return boolean
+function Child:finished() return self:metadata().finished ~= nil or ended[self.uri] == true end
+
 --- @async
 function Child:replay()
+  -- before reading, so that what it wrote before it finished is read
+  local finished = self:finished()
   self:read()
-  if self:metadata().finished then return self.log:finish() end
+  if finished then return self.log:finish() end
   self.on_status({ type = 'working', state = 'working' })
   self.timer = vim.uv.new_timer()
   self.timer:start(
@@ -777,7 +803,7 @@ function Child:replay()
     1000,
     vim.schedule_wrap(function()
       if self.timer == nil then return end
-      local finished = self:metadata().finished
+      local finished = self:finished()
       self:read()
       if not finished then return end
       self.log:finish()
@@ -806,9 +832,10 @@ end
 --- @param opts otto.OpenOpts
 --- @return otto.ClaudeChild
 local function open_child(session, agent, opts)
-  local folder = session_file(session):gsub('%.jsonl$', '') .. '/subagents/agent-' .. agent
+  local folder = (files[session] or session_file(session)):gsub('%.jsonl$', '') .. '/subagents/agent-' .. agent
   local parent = { name = 'parent', uri = 'claude://' .. session }
   local child = setmetatable({
+    uri = ('claude://%s/%s'):format(session, agent),
     file = folder .. '.jsonl',
     meta = folder .. '.meta.json',
     offset = 0,
@@ -846,6 +873,7 @@ function M.open(id, opts)
     notifications = {},
   }, Handle)
 
+  files[id] = handle.file
   local exists = vim.uv.fs_stat(handle.file) ~= nil
   local fork = not exists and forks[id] or {}
   local args = {
@@ -872,7 +900,10 @@ function M.open(id, opts)
     name = 'claude',
     on_message = function(msg) handle:on_message(msg) end,
     on_exit = function()
-      handle:flush()
+      -- without the ends that Claude Code didn't read, which its file doesn't have
+      handle.notifications = {}
+      handle.queue = {}
+      handle:queue_update()
       handle.log:settle(true)
       handle:set_working(false)
       handle.tasks = {}

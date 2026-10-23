@@ -144,8 +144,9 @@ end
 function M.terminal(session)
   local call = at_cursor(session).call
   if call == nil or call.tool ~= 'bash' then return nothing('no command under the cursor to run') end
-  vim.cmd.split()
-  vim.cmd.terminal(call.args.command)
+  -- by the shell, since `:terminal` would expand % and # in it
+  vim.cmd.new()
+  vim.fn.jobstart(call.args.command, { term = true })
 end
 
 return M
